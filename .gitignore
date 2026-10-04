@@ -221,3 +221,7 @@ __marimo__/
 
 # Output files
 output/
+
+# Training runs and downloaded base weights (only data/*.pt is submitted)
+runs/
+yolov8n-pose.pt
