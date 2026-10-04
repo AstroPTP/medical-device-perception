@@ -13,7 +13,7 @@
 
 
 # Author: Thanh Phu Phan
-# Last Modified: 2026-10-04
+# Last Modified: 2026-10-05
 
 """
 Train the Task 1 device detector: YOLOv8n-pose fine-tuned on the Roboflow
@@ -23,25 +23,58 @@ Each label is one device box (class bpm or thermo) plus four keypoints, the
 corners of the reading region in the device's own reading orientation:
 0 = top-left, 1 = top-right, 2 = bottom-right, 3 = bottom-left.
   - bpm    : corners of the LCD panel
-  - thermo : corners of the thermometer plate
+  - thermo : corners of the printed scale area (top = the 50 degC end)
 
 The best checkpoint is copied to data/task1_pose.pt, which task1.py loads.
 
 Usage (inside the comp3007 conda environment):
     python train_task1.py
-    python train_task1.py --data ../dataset/medical-device-perception.v3i.yolov8 --epochs 150
+    python train_task1.py --data ../dataset/medical-device-perception.v5i.yolov8 --epochs 150
 """
 
 import argparse
 import os
 import shutil
 
+import numpy as np
+import torch
 import yaml
 from ultralytics import YOLO
+from ultralytics.models.yolo.pose.val import PoseValidator
+from ultralytics.utils import loss as yolo_loss
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DATA = os.path.join(HERE, "..", "dataset", "medical-device-perception.v3i.yolov8")
+DEFAULT_DATA = os.path.join(HERE, "..", "dataset", "medical-device-perception.v5i.yolov8")
 WEIGHTS_OUT = os.path.join(HERE, "data", "task1_pose.pt")
+
+# Keypoint tolerance (OKS sigma) for our 4 corners. Ultralytics hard-codes
+# sigma = 1 / num_keypoints (0.25 here) for any non-human skeleton, 3-10x
+# looser than COCO's human keypoints (0.025-0.107). With 0.25 a corner that is
+# 100+ px off barely raises the loss, and validation still counts it as
+# correct, so the model never learns precise corners and best.pt is chosen on
+# a misleading score. Corners of a printed scale / LCD are sharp, well-defined
+# points, so a COCO-like value is appropriate.
+DEFAULT_KPT_SIGMA = 0.05
+
+
+def set_keypoint_sigma(sigma):
+    """Use `sigma` for every keypoint in both the training loss and validation OKS."""
+    original_loss_init = yolo_loss.v8PoseLoss.__init__
+
+    def loss_init(self, model):
+        original_loss_init(self, model)
+        nkpt = self.kpt_shape[0]
+        self.keypoint_loss = yolo_loss.KeypointLoss(
+            sigmas=torch.full((nkpt,), sigma, device=self.device))
+
+    original_init_metrics = PoseValidator.init_metrics
+
+    def init_metrics(self, model):
+        original_init_metrics(self, model)
+        self.sigma = np.full(self.kpt_shape[0], sigma)
+
+    yolo_loss.v8PoseLoss.__init__ = loss_init
+    PoseValidator.init_metrics = init_metrics
 
 
 def write_dataset_yaml(dataset_dir, out_path):
@@ -80,7 +113,12 @@ def main():
     parser.add_argument("--imgsz", type=int, default=960)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--device", default=None, help="e.g. 0 for GPU, cpu for CPU (default: auto)")
+    parser.add_argument("--kpt-sigma", type=float, default=DEFAULT_KPT_SIGMA,
+                        help="keypoint OKS sigma for loss and validation (Ultralytics default: 0.25)")
     args = parser.parse_args()
+
+    set_keypoint_sigma(args.kpt_sigma)
+    print(f"Keypoint sigma set to {args.kpt_sigma}")
 
     runs_dir = os.path.join(HERE, "runs")
     os.makedirs(runs_dir, exist_ok=True)
