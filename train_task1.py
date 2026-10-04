@@ -47,14 +47,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DATA = os.path.join(HERE, "..", "dataset", "medical-device-perception.v5i.yolov8")
 WEIGHTS_OUT = os.path.join(HERE, "data", "task1_pose.pt")
 
-# Keypoint tolerance (OKS sigma) for our 4 corners. Ultralytics hard-codes
-# sigma = 1 / num_keypoints (0.25 here) for any non-human skeleton, 3-10x
-# looser than COCO's human keypoints (0.025-0.107). With 0.25 a corner that is
-# 100+ px off barely raises the loss, and validation still counts it as
-# correct, so the model never learns precise corners and best.pt is chosen on
-# a misleading score. Corners of a printed scale / LCD are sharp, well-defined
-# points, so a COCO-like value is appropriate.
-DEFAULT_KPT_SIGMA = 0.05
+# Keypoint tolerance (OKS sigma). Ultralytics hard-codes sigma = 1 / num_keypoints
+# (0.25 here) for any non-human skeleton. That is loose, so predicted corners are
+# only approximate (task1.py refines them classically). A tight value (0.05) was
+# tried and made things worse: the OKS loss saturates for corners that start far
+# away, so they get almost no gradient, and with ~34 thermometers whose scale
+# corners are not sharp points, those corners collapsed. So the default keeps
+# Ultralytics' value; --kpt-sigma remains for experiments.
+DEFAULT_KPT_SIGMA = None
 
 
 def set_keypoint_sigma(sigma):
@@ -114,11 +114,13 @@ def main():
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--device", default=None, help="e.g. 0 for GPU, cpu for CPU (default: auto)")
     parser.add_argument("--kpt-sigma", type=float, default=DEFAULT_KPT_SIGMA,
-                        help="keypoint OKS sigma for loss and validation (Ultralytics default: 0.25)")
+                        help="keypoint OKS sigma for loss and validation "
+                             "(default: Ultralytics' 1/num_keypoints = 0.25)")
     args = parser.parse_args()
 
-    set_keypoint_sigma(args.kpt_sigma)
-    print(f"Keypoint sigma set to {args.kpt_sigma}")
+    if args.kpt_sigma is not None:
+        set_keypoint_sigma(args.kpt_sigma)
+        print(f"Keypoint sigma set to {args.kpt_sigma}")
 
     runs_dir = os.path.join(HERE, "runs")
     os.makedirs(runs_dir, exist_ok=True)

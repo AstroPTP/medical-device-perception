@@ -110,12 +110,13 @@ def load_model():
 
 def detect_device(img, conf=DEFAULT_CONF, imgsz=DEFAULT_IMGSZ):
     """
-    Return (class_name, confidence, corners) for the most confident device,
-    or None if nothing scores above `conf`.
+    Return (class_name, confidence, corners, box) for the most confident
+    device, or None if nothing scores above `conf`.
 
     Each positive image holds exactly one device, so only the best detection
     is kept; extra boxes would otherwise count as failed detections.
     corners is a (4, 2) float array in pixel coordinates: TL, TR, BR, BL.
+    box is the device's bounding box (x0, y0, x1, y1).
     """
     model = load_model()
     result = model.predict(img, imgsz=imgsz, conf=conf, verbose=False)[0]
@@ -126,7 +127,29 @@ def detect_device(img, conf=DEFAULT_CONF, imgsz=DEFAULT_IMGSZ):
     class_name = result.names[int(result.boxes.cls[best])]
     confidence = float(result.boxes.conf[best])
     corners = result.keypoints.xy[best].cpu().numpy().astype(np.float32)
-    return class_name, confidence, corners
+    box = result.boxes.xyxy[best].cpu().numpy().astype(np.float32)
+    return class_name, confidence, corners, box
+
+
+def repair_outlier_corner(corners, box, margin=0.1):
+    """
+    Rebuild a single corner that was predicted far outside the device box.
+
+    The reading region lies inside the device, so a corner well outside the
+    detected box is a bad prediction. If exactly one corner is off, it is
+    replaced by completing the parallelogram from the other three
+    (missing = previous + next - opposite); the refinement step then snaps it
+    to the real border. Two or more bad corners cannot be repaired this way.
+    """
+    x0, y0, x1, y1 = box
+    mx, my = margin * (x1 - x0), margin * (y1 - y0)
+    outside = [(x < x0 - mx or x > x1 + mx or y < y0 - my or y > y1 + my) for x, y in corners]
+    if sum(outside) != 1:
+        return corners, False
+    i = outside.index(True)
+    repaired = corners.copy()
+    repaired[i] = corners[(i - 1) % 4] + corners[(i + 1) % 4] - corners[(i + 2) % 4]
+    return repaired, True
 
 
 def ensure_clockwise(corners):
@@ -360,7 +383,10 @@ def extract_reading_region(img, conf=DEFAULT_CONF, imgsz=DEFAULT_IMGSZ, pad=DEFA
     detection = detect_device(img, conf=conf, imgsz=imgsz)
     if detection is None:
         return None
-    class_name, confidence, predicted = detection
+    class_name, confidence, predicted, box = detection
+    predicted, repaired = repair_outlier_corner(predicted, box)
+    if repaired:
+        print("  one corner was far outside the device box; rebuilt from the other three")
     predicted = ensure_clockwise(predicted)
 
     corners, refined = (refine_corners(img, class_name, predicted) if refine
