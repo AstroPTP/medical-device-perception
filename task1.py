@@ -264,8 +264,10 @@ def refine_lcd_corners(img, corners):
         if np.dot(np.array([-d[1], d[0]]), mid - centre) < 0:
             d = -d
         # Sample the middle 80% of the side: LCD corners are rounded.
+        # +-35 deg: on strong perspective views the predicted quad can be
+        # rotated ~30 deg less than the real LCD (validation img4).
         lines.append(search_line(gx, gy, mid, d, 0.4 * np.linalg.norm(b - a),
-                                 max_shift=0.25 * size, max_angle_deg=20, angle_step_deg=1.0,
+                                 max_shift=0.25 * size, max_angle_deg=35, angle_step_deg=1.0,
                                  score_fn=outward_rise))
 
     refined = np.array([intersect_lines(*lines[i - 1], *lines[i]) for i in range(4)],
