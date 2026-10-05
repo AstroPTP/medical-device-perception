@@ -11,3 +11,6 @@ num_epochs: 10
 
 # Task 2
 task2_debug: 1
+
+# Task 3
+task3_debug: 1
