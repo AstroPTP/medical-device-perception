@@ -14,20 +14,23 @@
 
 
 # Author: Thanh Phu Phan
-# Last Modified: 2026-10-01
+# Last Modified: 2026-10-05
 
 """
-Task 2: localise the reading inside a rectified device image (output of Task 1).
+Task 2: segment the reading inside a rectified device image (output of Task 1).
 
   - BPM LCD     -> one crop per seven-segment digit, saved as d1.png, d2.png, ...
                    in reading order (systolic row, diastolic row, pulse row,
                    each left to right).
-  - Thermometer -> one crop, t.png, covering the top of the liquid column and
-                   the two numbered scale marks around it.
+  - Thermometer -> one crop, t.png, centred on the top of the liquid column and
+                   reaching past the numbered scale labels above and below it.
 
 Everything here is classical OpenCV: the input is already upright and tightly
 cropped, so no learned model is needed. All sizes are relative to the image
-width so the code does not depend on the input resolution.
+size so the code does not depend on the input resolution.
+
+Set "task2_debug: 1" in config.txt to also save output/task2/debug/<name>.png,
+showing the detected digit boxes, or the liquid top, scale labels and ticks.
 """
 
 import glob
@@ -36,9 +39,14 @@ import os
 import cv2
 import numpy as np
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(HERE, "output", "task2")
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp")
 
+DEFAULT_DEBUG = 0      # 1 = also save a debug image per input
+
 # An upright thermometer plate is much taller than it is wide; a BPM LCD is not.
+# Only used when the file name does not say which device it is.
 THERMO_MIN_ASPECT = 2.5
 
 
@@ -57,70 +65,156 @@ def save_output(output_path, content, output_type='txt'):
         print("Unsupported output type. Use 'txt' or 'image'.")
 
 
+def dark_print_mask(img):
+    """Binary mask (255 = dark print or LCD segment) with uneven lighting removed."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    w = gray.shape[1]
+    # Dividing by a heavily blurred copy flattens shadows and glare gradients.
+    background = cv2.GaussianBlur(gray, (0, 0), sigmaX=w / 10)
+    flat = cv2.divide(gray, background, scale=255)
+
+    # Gaussian blur + Otsu's thresholding, then invert so the dark print is
+    # the white foreground for connected component analysis (as in prac04).
+    blur = cv2.GaussianBlur(flat, (5, 5), 0)
+    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return cv2.bitwise_not(th)
+
+
 # --------------------------------------------------------------------------- #
 # LCD digits
 # --------------------------------------------------------------------------- #
 
 def lcd_segment_mask(img):
-    """Binary mask (255 = dark LCD segment) with uneven lighting removed."""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    w = gray.shape[1]
-    # Dividing by a heavily blurred copy flattens shadows and glare gradients.
-    background = cv2.GaussianBlur(gray, (0, 0), w / 10)
-    flat = cv2.divide(gray, background, scale=255)
-    _, mask = cv2.threshold(flat, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    """Mask of the dark LCD segments, with single-pixel noise removed."""
+    element = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    return cv2.morphologyEx(dark_print_mask(img), cv2.MORPH_OPEN, element)
+
+
+def merge_fragments(boxes, max_h, shape):
+    """
+    Join boxes that are pieces of one digit.
+
+    At low resolution the gap between a digit's upper and lower segments can
+    be wider than the dilation bridges, so a "1" or "7" falls apart into a top
+    and a bottom piece. Pieces of one digit share their columns, and together
+    are no taller than a whole digit; a digit and the one in the row below it
+    also share columns, but together are about twice as tall. Only sizeable
+    pieces separated by a thin gap are joined, so specks next to an icon or
+    strips of bezel along the border are not stitched into a digit.
+    """
+    def is_piece(b):
+        return b[3] >= 0.2 * max_h and not touches_border(b, shape)
+
+    boxes = [list(b) for b in boxes]
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                xa, ya, wa, ha = boxes[i]
+                xb, yb, wb, hb = boxes[j]
+                if not (is_piece(boxes[i]) and is_piece(boxes[j])):
+                    continue
+                overlap = min(xa + wa, xb + wb) - max(xa, xb)
+                gap = max(ya, yb) - min(ya + ha, yb + hb)
+                x0, y0 = min(xa, xb), min(ya, yb)
+                x1, y1 = max(xa + wa, xb + wb), max(ya + ha, yb + hb)
+                if (overlap >= 0.5 * min(wa, wb) and gap <= 0.15 * max_h
+                        and y1 - y0 <= 1.1 * max_h):
+                    boxes[i] = [x0, y0, x1 - x0, y1 - y0]
+                    del boxes[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return [tuple(b) for b in boxes]
+
+
+def group_rows(boxes):
+    """Group boxes into rows by vertical centre; rows top to bottom, boxes left to right."""
+    boxes = sorted(boxes, key=lambda c: c[1] + c[3] / 2)
+    rows = []
+    for c in boxes:
+        cy = c[1] + c[3] / 2
+        if rows and abs(cy - rows[-1][0]) < 0.5 * c[3]:
+            rows[-1][1].append(c)
+        else:
+            rows.append([cy, [c]])
+    return [sorted(row, key=lambda c: c[0]) for _, row in rows]
+
+
+def touches_border(box, shape, margin=2):
+    x, y, bw, bh = box
+    h, w = shape[:2]
+    return x <= margin or y <= margin or x + bw >= w - margin or y + bh >= h - margin
+
+
+def clean_row(row, shape):
+    """
+    Drop boxes that do not fit the row.
+
+    The digits of one row are all the same height. A sliver of bezel or shadow
+    along the image border can look digit-shaped on its own, but it is not the
+    height of the digits next to it. Border boxes are only kept when they match
+    the digits away from the border, so a digit clipped by Task 1 survives but a
+    lone border sliver does not.
+    """
+    inner = [b for b in row if not touches_border(b, shape)]
+    if not inner:
+        return []
+    ref_h = float(np.median([b[3] for b in inner]))
+    return [b for b in row if abs(b[3] - ref_h) <= 0.25 * ref_h]
 
 
 def find_lcd_digits(img):
-    """Return digit boxes (x, y, w, h) in reading order."""
+    """Return digit boxes (x, y, w, h) as a list of rows, in reading order."""
     mask = lcd_segment_mask(img)
     h, w = mask.shape
 
     # Segments of one digit are separated by thin gaps; digits by much wider
     # ones. A small dilation joins each digit's segments into one blob.
     k = max(3, int(round(w * 0.025)))
-    joined = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
-    num, labels, stats, _ = cv2.connectedComponentsWithStats(joined)
+    element = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+    joined = cv2.dilate(mask, element)
+    num_labels, labels_im, stats, _ = cv2.connectedComponentsWithStats(joined, connectivity=8)
 
-    candidates = []
-    for i in range(1, num):
-        x, y, bw, bh, _ = stats[i]
+    blobs = []
+    for i in range(1, num_labels):
         # The LCD holds three rows of digits, so a real digit is well under
         # half the image height. Bezel edges and shadows along the border are
-        # far taller (or wider, caught by the aspect test below). A size test
-        # rather than "touches the border" keeps digits clipped by Task 1.
-        if bh > 0.45 * h:
+        # far taller (or wider, caught by the aspect test below).
+        if stats[i, cv2.CC_STAT_HEIGHT] > 0.45 * h:
             continue
-        # Tight box from the undilated segment pixels of this blob.
-        ys, xs = np.nonzero((labels == i) & (mask > 0))
+        # Tight box from the undilated segment pixels of this blob, using its
+        # x and y distributions (column and row pixel counts, as in prac04).
+        x, y, width, height, _ = stats[i]
+        blob = (labels_im[y:y + height, x:x + width] == i) & (mask[y:y + height, x:x + width] > 0)
+        x_distribution = np.sum(blob, axis=0)
+        y_distribution = np.sum(blob, axis=1)
+        xs, ys = np.nonzero(x_distribution)[0], np.nonzero(y_distribution)[0]
         if len(xs) == 0:
             continue
-        x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
-        # Seven-segment digits are clearly taller than wide; icons like "OK"
-        # or the heart are roughly square.
-        if (y1 - y0) < 1.4 * (x1 - x0):
-            continue
-        candidates.append((x0, y0, x1 - x0, y1 - y0))
+        blobs.append((x + xs[0], y + ys[0], xs[-1] + 1 - xs[0], ys[-1] + 1 - ys[0]))
 
-    if not candidates:
+    # Seven-segment digits are clearly taller than wide; icons like "OK" or
+    # the heart are roughly square. Even a "1" is a solid bar, though, unlike
+    # the hairline slivers of bezel left along the border.
+    def digit_shaped(b):
+        return 0.1 * b[3] <= b[2] <= b[3] / 1.4
+
+    whole = [b for b in blobs if digit_shaped(b)]
+    if not whole:
         return []
+    blobs = merge_fragments(blobs, max(b[3] for b in whole), mask.shape)
+    candidates = [b for b in blobs if digit_shaped(b)]
 
     # Drop small specks: the pulse digits are the smallest real ones (~60% of
     # the systolic height).
     max_h = max(c[3] for c in candidates)
     digits = [c for c in candidates if c[3] >= 0.4 * max_h]
 
-    # Group into rows by vertical centre, then read top-to-bottom, left-to-right.
-    digits.sort(key=lambda c: c[1] + c[3] / 2)
-    rows = []
-    for c in digits:
-        cy = c[1] + c[3] / 2
-        if rows and abs(cy - rows[-1][0]) < 0.5 * c[3]:
-            rows[-1][1].append(c)
-        else:
-            rows.append([cy, [c]])
-    return [c for _, row in rows for c in sorted(row, key=lambda c: c[0])]
+    rows = [clean_row(row, mask.shape) for row in group_rows(digits)]
+    return [row for row in rows if row]
 
 
 def crop_box(img, box, pad_frac=0.01):
@@ -133,9 +227,17 @@ def crop_box(img, box, pad_frac=0.01):
     return img[y0:y1, x0:x1]
 
 
-def extract_lcd_digits(img):
-    """List of digit crops in reading order."""
-    return [crop_box(img, box) for box in find_lcd_digits(img)]
+def draw_lcd_debug(img, rows):
+    vis = img.copy()
+    thick = max(2, img.shape[1] // 300)
+    n = 0
+    for row in rows:
+        for x, y, bw, bh in row:
+            n += 1
+            cv2.rectangle(vis, (int(x), int(y)), (int(x + bw), int(y + bh)), (0, 0, 255), thick)
+            cv2.putText(vis, f"d{n}", (int(x), int(y) + 3 * thick + 10), cv2.FONT_HERSHEY_SIMPLEX,
+                        img.shape[1] / 600, (0, 160, 0), thick)
+    return vis
 
 
 # --------------------------------------------------------------------------- #
@@ -176,8 +278,8 @@ def fit_liquid_line(response, max_tilt_deg=6.0):
     return a, x_centre - a * yc
 
 
-def find_liquid_column(img):
-    """Return (x, y_top) of the liquid column: its column at the top, and the row of its top."""
+def liquid_response(img):
+    """Per-pixel "thin coloured vertical line" strength, high on the liquid."""
     h, w = img.shape[:2]
     # Chroma (max - min channel) rather than HSV saturation: saturation
     # explodes on noisy dark pixels, which would make the black scale print
@@ -186,35 +288,54 @@ def find_liquid_column(img):
     sat = cv2.GaussianBlur(sat, (0, 0), 1.0)
 
     # The liquid is a thin, coloured vertical line; the scale print is black
-    # (no chroma). A horizontal white top-hat on chroma keeps only narrow
-    # coloured structures, i.e. the liquid.
+    # (no chroma). After reversing the chroma image (as in prac02) the liquid
+    # is a thin dark line, and a horizontal black-hat (closing minus image)
+    # keeps only such narrow structures, i.e. the liquid.
     k = max(5, int(round(w * 0.05)))
-    response = cv2.morphologyEx(sat, cv2.MORPH_TOPHAT, np.ones((1, k), np.uint8)).astype(np.float32)
+    element = cv2.getStructuringElement(cv2.MORPH_RECT, (k, 1))
+    response = cv2.morphologyEx(255 - sat, cv2.MORPH_BLACKHAT, element).astype(np.float32)
     # Average along the (near-vertical) line direction to suppress pixel noise
     # without widening the line.
-    response = cv2.GaussianBlur(response, (1, 0), sigmaX=0.1, sigmaY=max(1.0, h * 0.004))
+    return cv2.GaussianBlur(response, (1, 0), sigmaX=0.1, sigmaY=max(1.0, h * 0.004))
+
+
+def find_liquid_top(response, line, y_range=None):
+    """
+    Row of the top of the liquid column along the fitted line.
+
+    y_range limits the search to the printed scale. The coloured bulb at the
+    bottom of the tube responds far more strongly than the thin column, and if
+    it is left in, the threshold below splits "bulb vs column" instead of
+    "column vs empty tube".
+    """
+    h, w = response.shape
+    a, b = line
+    lo, hi = (0, h) if y_range is None else (max(0, int(y_range[0])), min(h, int(y_range[1])))
+    if hi - lo < 10:
+        return None
 
     # Sample the response along the fitted line, a few pixels either side.
-    a, b = fit_liquid_line(response)
     half = max(2, int(round(w * 0.006)))
-    rows = np.arange(h)
+    rows = np.arange(lo, hi)
     centres = np.clip(np.round(a * rows + b).astype(int), half, w - half - 1)
-    row_profile = np.array([response[y, c - half:c + half + 1].mean() for y, c in zip(rows, centres)])
-    row_profile = cv2.GaussianBlur(row_profile.reshape(-1, 1), (0, 0), max(1, h * 0.003)).ravel()
+    profile = np.array([response[y, c - half:c + half + 1].mean() for y, c in zip(rows, centres)])
+    profile = cv2.GaussianBlur(profile.reshape(-1, 1), (0, 0), max(1, h * 0.003)).ravel()
 
-    # Otsu on the profile values splits "empty tube / plate" from "liquid",
-    # so a constant offset from noise or lighting does not matter.
-    scaled = cv2.normalize(row_profile, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    # Clip the bulb's very high values so they do not drag the threshold up.
+    # Otsu on the profile values splits "empty tube" from "liquid", so a
+    # constant offset from noise or lighting does not matter.
+    scaled = cv2.normalize(profile, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    # Clip rare very high values (glare, any bit of bulb left in the range) so
+    # they do not drag the threshold up.
     scaled = np.minimum(scaled, np.uint8(np.percentile(scaled, 95)))
     thr, _ = cv2.threshold(scaled.reshape(-1, 1), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     on = scaled > thr
 
     # Bridge short dropouts (glare, tick shadows) before looking for the run.
     gap = max(3, int(round(h * 0.01)))
-    on = cv2.morphologyEx(on.astype(np.uint8).reshape(-1, 1), cv2.MORPH_CLOSE,
-                          np.ones((gap, 1), np.uint8)).ravel() > 0
+    element = cv2.getStructuringElement(cv2.MORPH_RECT, (1, gap))
+    on = cv2.morphologyEx(on.astype(np.uint8).reshape(-1, 1), cv2.MORPH_CLOSE, element).ravel() > 0
 
+    # The liquid is the longest "on" run; its top is the reading.
     best_len, best_top, run_start = 0, None, None
     for y, v in enumerate(np.append(on, False)):
         if v and run_start is None:
@@ -223,30 +344,24 @@ def find_liquid_column(img):
             if y - run_start > best_len:
                 best_len, best_top = y - run_start, run_start
             run_start = None
-    if best_top is None:
-        return None, None
-    return int(round(a * best_top + b)), best_top
+    return None if best_top is None else lo + best_top
 
 
-def find_scale_labels(img, liquid_x):
+def find_scale_labels(mask, liquid_x):
     """Vertical centres of the numbered labels on the left (degC) scale, top to bottom."""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-    # Flatten lighting gradients first, as for the LCD, then threshold.
-    flat = cv2.divide(gray, cv2.GaussianBlur(gray, (0, 0), w / 10), scale=255)
-    _, mask = cv2.threshold(flat, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    num, _, stats, cents = cv2.connectedComponentsWithStats(mask)
+    h, w = mask.shape
+    num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
 
     # Label digits are compact, glyph-sized blobs left of the tube. Tick marks
     # are thin and wide, so the aspect test removes them.
     glyphs = []
-    for i in range(1, num):
+    for i in range(1, num_labels):
         x, y, bw, bh, _ = stats[i]
         if not (0.04 * w <= bh <= 0.15 * w):
             continue
         if bw > 1.2 * bh or x + bw > liquid_x - 0.08 * w:
             continue
-        glyphs.append((cents[i][1], bh))
+        glyphs.append((centroids[i][1], bh))
     if not glyphs:
         return []
 
@@ -274,41 +389,125 @@ def find_scale_labels(img, liquid_x):
     return centres
 
 
-def find_thermo_reading_box(img):
-    """Return (y0, y1, liquid_x, liquid_top) for the thermometer reading crop."""
+def find_scale_ticks(mask, liquid_x, y_range):
+    """
+    Vertical positions of the tick marks on the left (degC) scale.
+
+    The ticks form a band of short horizontal bars just left of the tube. The
+    band is the run of mostly-dark columns nearest the tube (the tube itself is
+    print-free); within it, each tick is a run of dark rows.
+    """
+    h, w = mask.shape
+    y0, y1 = max(0, int(y_range[0])), min(h, int(y_range[1]))
+    x_lo = max(0, int(liquid_x - 0.2 * w))
+    x_hi = int(liquid_x)
+    if y1 - y0 < 10 or x_hi - x_lo < 5:
+        return [], (x_lo, x_lo)
+
+    # x distribution (dark pixels per column, as in prac04) as a fraction.
+    region = mask[y0:y1, x_lo:x_hi] > 0
+    cols = np.sum(region, axis=0) / region.shape[0]
+    thr = 0.5 * cols.max()
+    # Walk left from the tube: skip the empty tube, then take the dark band.
+    x = len(cols) - 1
+    while x >= 0 and cols[x] < thr:
+        x -= 1
+    band_hi = x + 1
+    while x >= 0 and cols[x] >= thr:
+        x -= 1
+    band_lo = x + 1
+    if band_hi - band_lo < 2:
+        return [], (x_lo, x_lo)
+
+    # y distribution of the band: a tick row is mostly dark.
+    band = mask[y0:y1, x_lo + band_lo:x_lo + band_hi] > 0
+    rows = np.sum(band, axis=1) / band.shape[1]
+    on = np.append(rows > 0.5, False)
+    ticks, start = [], None
+    for y, v in enumerate(on):
+        if v and start is None:
+            start = y
+        elif not v and start is not None:
+            ticks.append(y0 + (start + y - 1) / 2)
+            start = None
+    return ticks, (x_lo + band_lo, x_lo + band_hi)
+
+
+def analyse_thermometer(img):
+    """
+    Locate the liquid top and the scale around it, and choose the crop rows.
+
+    Returns a dict with the liquid line, liquid top row, label and tick rows,
+    the tick band columns and the crop rows (y0, y1).
+    """
     h, w = img.shape[:2]
-    liquid_x, top = find_liquid_column(img)
+    response = liquid_response(img)
+    line = fit_liquid_line(response)
+    liquid_x = line[0] * h / 2 + line[1]
+
+    mask = dark_print_mask(img)
+    labels = find_scale_labels(mask, liquid_x)
+    spacing = float(np.median(np.diff(labels))) if len(labels) >= 2 else None
+
+    # The reading lies on the printed scale, so look for the liquid top only
+    # between the end labels (half a label step of slack either side). This
+    # keeps the coloured bulb below the scale out of the search.
+    scale_range = (labels[0] - 0.5 * spacing, labels[-1] + 0.5 * spacing) if spacing else None
+    top = find_liquid_top(response, line, scale_range)
+    if top is None and scale_range is not None:
+        top = find_liquid_top(response, line)
     if top is None:
         raise RuntimeError("liquid column not found")
 
-    labels = find_scale_labels(img, liquid_x)
-    if len(labels) >= 2:
-        spacing = float(np.median(np.diff(labels)))
+    if spacing:
         # The pair of labels bracketing the liquid top (clamped to the ends).
         idx = int(np.searchsorted(labels, top))
         idx = min(max(idx, 1), len(labels) - 1)
         above, below = labels[idx - 1], labels[idx]
+        # Centre the crop on the liquid top, and make it tall enough to show
+        # both bracketing labels in full (a label is ~0.3 steps tall).
         margin = 0.3 * spacing
-        y0, y1 = above - margin, below + margin
+        half = max(top - (above - margin), (below + margin) - top)
     else:
         # No readable scale: fall back to a window centred on the liquid top.
-        y0, y1 = top - 0.3 * w, top + 0.3 * w
+        half = 0.3 * w
+    y0 = int(max(0, round(top - half)))
+    y1 = int(min(h, round(top + half)))
 
-    y0 = int(max(0, round(y0)))
-    y1 = int(min(h, round(y1)))
-    return y0, y1, liquid_x, top
+    ticks, band = find_scale_ticks(mask, liquid_x, (y0, y1))
+    return {"line": line, "top": int(top), "labels": labels, "spacing": spacing,
+            "ticks": ticks, "tick_band": band, "crop": (y0, y1)}
 
 
-def extract_thermo_reading(img):
-    y0, y1, _, _ = find_thermo_reading_box(img)
-    return img[y0:y1, :]
+def draw_thermo_debug(img, info):
+    vis = img.copy()
+    h, w = img.shape[:2]
+    thick = max(2, w // 300)
+    a, b = info["line"]
+    cv2.line(vis, (int(round(b)), 0), (int(round(a * h + b)), h), (255, 0, 0), 1)
+    for y in info["labels"]:
+        cv2.line(vis, (0, int(y)), (int(w * 0.15), int(y)), (0, 160, 0), thick)
+    bx0, bx1 = info["tick_band"]
+    for y in info["ticks"]:
+        cv2.line(vis, (bx0, int(y)), (bx1, int(y)), (255, 0, 255), 1)
+    top = info["top"]
+    cv2.line(vis, (0, top), (w, top), (0, 0, 255), thick)
+    y0, y1 = info["crop"]
+    cv2.rectangle(vis, (0, y0), (w - 1, y1 - 1), (0, 200, 255), thick)
+    return vis
 
 
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 
-def is_thermometer(img):
+def is_thermometer(path, img):
+    """Device type from the file name (lcdX / thermoX), else from the shape."""
+    name = os.path.basename(path).lower()
+    if name.startswith("thermo"):
+        return True
+    if name.startswith("lcd"):
+        return False
     h, w = img.shape[:2]
     return h / w >= THERMO_MIN_ASPECT
 
@@ -320,24 +519,63 @@ def list_images(image_path):
                   if p.lower().endswith(IMAGE_EXTS))
 
 
+def read_settings(config):
+    """Task 2 settings from config.txt, falling back to the defaults."""
+    config = config or {}
+    return {"debug": int(config.get("task2_debug", DEFAULT_DEBUG)) != 0}
+
+
+def process_lcd(img, out_dir):
+    rows = find_lcd_digits(img)
+    sizes = ", ".join(str(len(r)) for r in rows)
+    print(f"  bpm: {sum(len(r) for r in rows)} digit(s) in {len(rows)} row(s) [{sizes}]")
+    if len(rows) != 3:
+        print("  warning: expected 3 rows (SYS, DIA, PULSE)")
+    boxes = [box for row in rows for box in row]
+    for i, box in enumerate(boxes, start=1):
+        save_output(os.path.join(out_dir, f"d{i}.png"), crop_box(img, box), output_type='image')
+    return draw_lcd_debug(img, rows)
+
+
+def process_thermo(img, out_dir):
+    h = img.shape[0]
+    info = analyse_thermometer(img)
+    y0, y1 = info["crop"]
+    print(f"  thermo: liquid top at row {info['top']} ({100 * info['top'] / h:.1f}% down)")
+    if info["spacing"]:
+        print(f"  {len(info['labels'])} scale labels, {info['spacing']:.1f} px apart (10 degC)")
+    else:
+        print("  warning: scale labels not found, cropping around the liquid top only")
+    if len(info["ticks"]) >= 2:
+        tick_step = float(np.median(np.diff(info["ticks"])))
+        print(f"  {len(info['ticks'])} tick marks in the crop, {tick_step:.1f} px apart (1 degC)")
+    print(f"  crop rows {y0}-{y1}")
+    save_output(os.path.join(out_dir, "t.png"), img[y0:y1, :], output_type='image')
+    return draw_thermo_debug(img, info)
+
+
 def run_task2(image_path, config):
-    for path in list_images(image_path):
+    settings = read_settings(config)
+    images = list_images(image_path)
+    print(f"Task 2: {len(images)} image(s) in {image_path} ({settings})")
+
+    for path in images:
         img = cv2.imread(path)
         if img is None:
             print(f"Could not read image: {path}")
             continue
         name = os.path.splitext(os.path.basename(path))[0]
-        out_dir = os.path.join("output", "task2", name)
+        out_dir = os.path.join(OUTPUT_DIR, name)
+        print(f"{os.path.basename(path)}:")
 
         try:
-            if is_thermometer(img):
-                save_output(os.path.join(out_dir, "t.png"), extract_thermo_reading(img), output_type='image')
+            if is_thermometer(path, img):
+                vis = process_thermo(img, out_dir)
             else:
-                crops = extract_lcd_digits(img)
-                if not crops:
-                    print(f"No digits found in {path}")
-                for i, crop in enumerate(crops, start=1):
-                    save_output(os.path.join(out_dir, f"d{i}.png"), crop, output_type='image')
+                vis = process_lcd(img, out_dir)
+            if settings["debug"]:
+                save_output(os.path.join(OUTPUT_DIR, "debug", f"debug_{name}.png"), vis,
+                            output_type='image')
         except Exception as e:
             # One bad image must not stop the rest of the batch.
             print(f"Task 2 failed on {path}: {e}")

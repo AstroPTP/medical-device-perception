@@ -8,3 +8,6 @@ StudentID: 21664322
 learning_rate: 0.001
 batch_size: 32
 num_epochs: 10
+
+# Task 2
+task2_debug: 1
