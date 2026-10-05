@@ -455,12 +455,6 @@ def draw_thermo_debug(img, info):
                 cv2.FONT_HERSHEY_SIMPLEX, max(0.4, w / 800), (0, 0, 255), thick)
     return vis
 
-
-def round_half_up(x):
-    """Round to the nearest integer, halves up (Python's round() rounds to even)."""
-    return int(math.floor(x + 0.5))
-
-
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
@@ -509,7 +503,7 @@ def process_thermo(in_dir, out_dir, debug_path=None):
     print(f"  liquid top at row {info['top']}, {len(info['ticks'])} ticks, "
           f"{info['deg_px']:.1f} px per degC")
     print(f"  labels: {labels} (confidence {info['label_conf']:.2f})")
-    reading = round_half_up(info["temp"])
+    reading = round(info["temp"],2)
     print(f"  thermo: {info['temp']:.2f} degC (from {info['method']}) -> {reading}")
     save_output(os.path.join(out_dir, "t.txt"), str(reading), output_type='txt')
     if debug_path:
