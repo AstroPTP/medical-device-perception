@@ -75,7 +75,7 @@ def dark_print_mask(img):
 
     # Gaussian blur + Otsu's thresholding, then invert so the dark print is
     # the white foreground for connected component analysis (as in prac04).
-    blur = cv2.GaussianBlur(flat, (5, 5), 0)
+    blur = cv2.GaussianBlur(flat, (3, 3), 0)
     _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return cv2.bitwise_not(th)
 
