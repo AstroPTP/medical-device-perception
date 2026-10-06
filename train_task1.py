@@ -80,9 +80,9 @@ def set_keypoint_sigma(sigma):
         :return: None
         """
         original_loss_init(self, model)
-        nkpt = self.kpt_shape[0]
+        num_keypoints = self.kpt_shape[0]
         self.keypoint_loss = yolo_loss.KeypointLoss(
-            sigmas=torch.full((nkpt,), sigma, device=self.device))
+            sigmas=torch.full((num_keypoints,), sigma, device=self.device))
 
     original_init_metrics = PoseValidator.init_metrics
 
@@ -118,21 +118,21 @@ def write_dataset_yaml(dataset_dir, out_path):
     :return: path of the written YAML file (str)
     """
     dataset_dir = os.path.abspath(dataset_dir)
-    with open(os.path.join(dataset_dir, "data.yaml")) as f:
-        src = yaml.safe_load(f)
+    with open(os.path.join(dataset_dir, "data.yaml")) as file:
+        source = yaml.safe_load(file)
 
-    cfg = {
+    config = {
         "path": dataset_dir,          # absolute dataset root; split folders below are relative to it
         "train": "train/images",
         "val": "valid/images",
         "test": "test/images",
         "kpt_shape": [4, 3],          # 4 corner keypoints, each stored as (x, y, visibility)
         "flip_idx": [1, 0, 3, 2],     # corrected horizontal-flip mapping: swap left and right corners
-        "nc": src["nc"],              # class count kept from the Roboflow export
-        "names": src["names"],        # class names (bpm, thermo) kept from the Roboflow export
+        "nc": source["nc"],           # class count kept from the Roboflow export
+        "names": source["names"],     # class names (bpm, thermo) kept from the Roboflow export
     }
-    with open(out_path, "w") as f:
-        yaml.safe_dump(cfg, f, sort_keys=False)
+    with open(out_path, "w") as file:
+        yaml.safe_dump(config, file, sort_keys=False)
     return out_path
 
 def main():
