@@ -37,9 +37,6 @@ Thermometer calculation, all on t.png:
      best one wins. One misread glyph is outvoted by the others
   4. Each tick gets its value from the labels; the reading is a linear
      interpolation between the two ticks either side of the liquid top
-
-Set "task3_debug: 1" in config.txt to also save output/task3/debug/<name>.png,
-showing the liquid top, labels and ticks used for the thermometer reading
 """
 
 import glob
@@ -57,9 +54,6 @@ import task2
 HERE = os.path.dirname(os.path.abspath(__file__)) # Absolute path of the directory containing this script, so paths resolve from any working directory
 MODEL_PATH = os.path.join(HERE, "data", "task3_digits.pt") # Digit classifier weights written by train_task3.py
 OUTPUT_DIR = os.path.join(HERE, "output", "task3") # Output folder for the recognised readings
-
-# 1 = also save a debug image per thermometer
-DEFAULT_DEBUG = 0
 
 # Network input: digits are fitted into this box keeping their aspect ratio,
 # so a narrow "1" stays narrow (its shape is a big part of what makes it a 1)
@@ -529,7 +523,7 @@ def read_thermometer(img):
 
     :param img (np.ndarray): BGR scale image
     :return: dict with the reading "temp", the "method" used and everything found along
-             the way, for printing and the debug image. Raises RuntimeError if the
+             the way, for printing. Raises RuntimeError if the
              liquid or the labels cannot be found
     """
     height, width = img.shape[:2]
@@ -570,63 +564,6 @@ def read_thermometer(img):
             "label_conf": confidence}
 
 
-def draw_thermo_debug(img, info):
-    """
-    draw_thermo_debug: Draw the liquid line, ticks, label boxes and values, and the
-    reading on the scale image
-
-    :param img (np.ndarray): BGR scale image
-    :param info (dict): result of read_thermometer
-    :return: annotated copy of the image (np.ndarray)
-    """
-    annotated = img.copy()
-    height, width = img.shape[:2]
-
-    # Line thickness and font scale relative to the image width
-    thickness = max(1, width // 300)
-    font_scale = max(0.4, width / 800)
-    slope, intercept = info["line"]
-
-    # Liquid line in blue
-    cv2.line(annotated, (int(round(intercept)), 0), (int(round(slope * height + intercept)), height), (255, 0, 0), 1)
-
-    # Ticks in magenta, across the tick band
-    band_left, band_right = info["band"]
-    for tick_y in info["ticks"]:
-        cv2.line(annotated, (band_left, int(tick_y)), (band_right, int(tick_y)), (255, 0, 255), 1)
-
-    # Label glyph boxes and decoded values in green
-    for row, value in zip(info["rows"], info["values"]):
-        for box_x, box_y, box_width, box_height in row["glyphs"]:
-            cv2.rectangle(annotated, (box_x, box_y), (box_x + box_width, box_y + box_height), (0, 160, 0), thickness)
-        # Right edge of the last glyph
-        text_x = row["glyphs"][-1][0] + row["glyphs"][-1][2]
-        cv2.putText(
-            annotated,
-            str(value),
-            (text_x + 2, int(row["y"])),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            font_scale,
-            (0, 160, 0),    # green text
-            thickness,
-        )
-
-    # Liquid top and the reading in red
-    top = info["top"]
-    cv2.line(annotated, (0, top), (width, top), (0, 0, 255), thickness)
-    cv2.putText(
-        annotated,
-        f"{info['temp']:.1f} C",
-        (width // 2 + 10, max(15, top - 5)),    # just above the liquid top, right of centre
-        cv2.FONT_HERSHEY_SIMPLEX,
-        font_scale,
-        (0, 0, 255),                            # red text
-        thickness,
-    )
-
-    return annotated
-
-
 def round_half_up(value):
     """
     round_half_up: Round to the nearest integer, halves up (Python's round() rounds to even)
@@ -652,16 +589,6 @@ def digit_number(path):
     match = re.search(r"(\d+)", os.path.basename(path))
     return int(match.group(1)) if match else 0
 
-def read_settings(config):
-    """
-    read_settings: Read the Task 3 settings from config.txt, falling back to the defaults
-
-    :param config (dict): key/value pairs from config.txt, or None
-    :return: dict with "debug"
-    """
-    config = config or {}
-    return {"debug": int(config.get("task3_debug", DEFAULT_DEBUG)) != 0}
-
 def process_lcd(in_dir, out_dir):
     """
     process_lcd: Recognise every digit image dN.png in in_dir and save dN.txt
@@ -670,7 +597,7 @@ def process_lcd(in_dir, out_dir):
     :param out_dir (str): folder for the text files
     :return: None
     """
-    # Only d1.png, d2.png, ... (not e.g. a stray debug_*.png).
+    # Only d1.png, d2.png, ... (not any other stray .png).
     paths = sorted((path for path in glob.glob(os.path.join(in_dir, "*.png"))
                     if re.fullmatch(r"d\d+\.png", os.path.basename(path))), key=digit_number)
     
@@ -696,13 +623,12 @@ def process_lcd(in_dir, out_dir):
     print(f"  bpm digits: {''.join(str(digit) for digit, _ in results)}")
 
 
-def process_thermo(in_dir, out_dir, debug_path=None):
+def process_thermo(in_dir, out_dir):
     """
     process_thermo: Read the temperature from in_dir/t.png and save it as t.txt
 
     :param in_dir (str): folder containing t.png from Task 2
     :param out_dir (str): folder for the text file
-    :param debug_path (str): if given, save a debug image here
     :return: None
     """
     img = cv2.imread(os.path.join(in_dir, "t.png"))
@@ -720,8 +646,6 @@ def process_thermo(in_dir, out_dir, debug_path=None):
     reading = round_half_up(info["temp"])
     print(f"  thermo: {info['temp']:.2f} degC (from {info['method']}) -> {reading}")
     save_output(os.path.join(out_dir, "t.txt"), str(reading), output_type='txt')
-    if debug_path:
-        save_output(debug_path, draw_thermo_debug(img, info), output_type='image')
 
 
 def run_task3(image_path, config):
@@ -736,12 +660,10 @@ def run_task3(image_path, config):
     print("TASK 3 - Processing thermometer readings")
     print("=============================================================")
 
-    settings = read_settings(config)
-    # Reading folders are lcdX/ and thermoX/; anything else (e.g. a debug/
-    # folder left by Task 2) is skipped.
+    # Reading folders are lcdX/ and thermoX/; any other folder is skipped.
     subdirs = sorted(folder for folder in glob.glob(os.path.join(image_path, "*"))
                      if os.path.isdir(folder) and re.match(r"(lcd|thermo)", os.path.basename(folder).lower()))
-    print(f"Note: {len(subdirs)} reading(s) in {image_path} ({settings})")
+    print(f"Note: {len(subdirs)} reading(s) in {image_path}")
 
     for in_dir in subdirs:
         name = os.path.basename(os.path.normpath(in_dir))
@@ -749,9 +671,7 @@ def run_task3(image_path, config):
         print(f"[{name}]:")
         try:
             if name.lower().startswith("thermo"):
-                debug_path = (os.path.join(OUTPUT_DIR, "debug", f"debug_{name}.png")
-                              if settings["debug"] else None)
-                process_thermo(in_dir, out_dir, debug_path)
+                process_thermo(in_dir, out_dir)
             else:
                 process_lcd(in_dir, out_dir)
             print("------")

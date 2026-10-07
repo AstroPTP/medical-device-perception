@@ -28,9 +28,6 @@ Task 2: segment the reading inside a rectified device image (output of Task 1)
 Everything here is classical OpenCV: the input is already upright and tightly
 cropped, so no learned model is needed. All sizes are relative to the image
 size so the code does not depend on the input resolution
-
-Set "task2_debug: 1" in config.txt to also save output/task2/debug/<name>.png,
-showing the detected digit boxes, or the liquid top, scale labels and ticks
 """
 
 import glob
@@ -42,8 +39,6 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))   # Absolute path of the directory containing this script, so paths resolve from any working directory
 OUTPUT_DIR = os.path.join(HERE, "output", "task2")  # Output folder for the digit and scale crops
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp")      # File extensions treated as input images
-
-DEFAULT_DEBUG = 0 # 1 = also save a debug image per input
 
 # An upright thermometer plate is much taller than it is wide; a BPM LCD is not.
 # Only used when the file name does not say which device it is.
@@ -319,41 +314,6 @@ def crop_box(img, box, pad_frac=0.01):
     right, bottom = min(img_width, box_x + box_width + pad_px), min(img_height, box_y + box_height + pad_px)
 
     return img[top:bottom, left:right]
-
-
-def draw_lcd_debug(img, rows):
-    """
-    draw_lcd_debug: Draw the detected digit boxes and their output names on the LCD image
-
-    :param img (np.ndarray): BGR LCD image
-    :param rows (list): rows of boxes (x, y, w, h), as from find_lcd_digits
-    :return: annotated copy of the image (np.ndarray)
-    """
-    annotated = img.copy()
-    # Line thickness scaled to the image width
-    thickness = max(2, img.shape[1] // 300)
-    digit_count = 0
-
-    for row in rows:
-        for box_x, box_y, box_width, box_height in row:
-            digit_count += 1
-            cv2.rectangle(
-                annotated,
-                (int(box_x), int(box_y)),
-                (int(box_x + box_width), int(box_y + box_height)),
-                (0, 0, 255),        # red box
-                thickness,
-            )
-            cv2.putText(
-                annotated,
-                f"d{digit_count}",                          # output file name of this digit
-                (int(box_x), int(box_y) + 3 * thickness + 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                img.shape[1] / 600,                         # font scale relative to the image width
-                (0, 160, 0),                                # green text
-                thickness,
-            )
-    return annotated
 
 
 # --------------------------------------------------------------------------- #
@@ -650,41 +610,6 @@ def analyse_thermometer(img):
             "ticks": ticks, "tick_band": band, "crop": (crop_top, crop_bottom)}
 
 
-def draw_thermo_debug(img, info):
-    """
-    draw_thermo_debug: Draw the liquid line, labels, ticks, liquid top and crop on the
-    thermometer image
-
-    :param img (np.ndarray): BGR thermometer image
-    :param info (dict): result of analyse_thermometer
-    :return: annotated copy of the image (np.ndarray)
-    """
-    annotated = img.copy()
-    height, width = img.shape[:2]
-    # Line thickness scaled to the image width
-    thickness = max(2, width // 300)
-    slope, intercept = info["line"]
-    # Liquid line in blue
-    cv2.line(annotated, (int(round(intercept)), 0), (int(round(slope * height + intercept)), height), (255, 0, 0), 1)
-
-    # Scale labels in green
-    for label_y in info["labels"]:
-        cv2.line(annotated, (0, int(label_y)), (int(width * 0.15), int(label_y)), (0, 160, 0), thickness)
-
-    # Ticks in magenta, across the tick band
-    band_left, band_right = info["tick_band"]
-    for tick_y in info["ticks"]:
-        cv2.line(annotated, (band_left, int(tick_y)), (band_right, int(tick_y)), (255, 0, 255), 1)
-    # Liquid top in red
-    top = info["top"]
-    cv2.line(annotated, (0, top), (width, top), (0, 0, 255), thickness)
-    # Crop rows in orange
-    crop_top, crop_bottom = info["crop"]
-    cv2.rectangle(annotated, (0, crop_top), (width - 1, crop_bottom - 1), (0, 200, 255), thickness)
-
-    return annotated
-
-
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
@@ -720,24 +645,13 @@ def list_images(image_path):
                   if path.lower().endswith(IMAGE_EXTS))
 
 
-def read_settings(config):
-    """
-    read_settings: Read the Task 2 settings from config.txt, falling back to the defaults
-
-    :param config (dict): key/value pairs from config.txt, or None
-    :return: dict with "debug"
-    """
-    config = config or {}
-    return {"debug": int(config.get("task2_debug", DEFAULT_DEBUG)) != 0}
-
-
 def process_lcd(img, out_dir):
     """
     process_lcd: Segment the digits of one LCD image and save each as dN.png
 
     :param img (np.ndarray): BGR LCD image
     :param out_dir (str): folder for the digit crops
-    :return: debug image with the digit boxes (np.ndarray)
+    :return: None
     """
     rows = find_lcd_digits(img)
     sizes = ", ".join(str(len(row)) for row in rows)
@@ -751,7 +665,6 @@ def process_lcd(img, out_dir):
 
     for digit_idx, box in enumerate(boxes, start=1):
         save_output(os.path.join(out_dir, f"d{digit_idx}.png"), crop_box(img, box), output_type='image')
-    return draw_lcd_debug(img, rows)
 
 
 def process_thermo(img, out_dir):
@@ -760,7 +673,7 @@ def process_thermo(img, out_dir):
 
     :param img (np.ndarray): BGR thermometer image
     :param out_dir (str): folder for the crop
-    :return: debug image with the liquid top, labels, ticks and crop (np.ndarray)
+    :return: None
     """
     height = img.shape[0]
     info = analyse_thermometer(img)
@@ -779,8 +692,6 @@ def process_thermo(img, out_dir):
     print(f"  crop rows {crop_top}-{crop_bottom}")
     save_output(os.path.join(out_dir, "t.png"), img[crop_top:crop_bottom, :], output_type='image')
 
-    return draw_thermo_debug(img, info)
-
 
 def run_task2(image_path, config):
     """
@@ -794,9 +705,8 @@ def run_task2(image_path, config):
     print("TASK 2 - Segmenting images and extracting crops")
     print("=============================================================")
 
-    settings = read_settings(config)
     images = list_images(image_path)
-    print(f"Note: {len(images)} image(s) in {image_path} ({settings})")
+    print(f"Note: {len(images)} image(s) in {image_path}")
 
     for path in images:
         img = cv2.imread(path)
@@ -810,12 +720,9 @@ def run_task2(image_path, config):
 
             try:
                 if is_thermometer(path, img):
-                    debug_image = process_thermo(img, out_dir)
+                    process_thermo(img, out_dir)
                 else:
-                    debug_image = process_lcd(img, out_dir)
-                if settings["debug"]:
-                    save_output(os.path.join(OUTPUT_DIR, "debug", f"debug_{name}.png"), debug_image,
-                                output_type='image')
+                    process_lcd(img, out_dir)
                 print("------")
             except Exception as error:
                 # One bad image must not stop the rest of the batch

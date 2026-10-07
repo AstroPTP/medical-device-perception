@@ -39,8 +39,7 @@ task modules, so no intermediate files are needed and each model is loaded
 only once for the whole batch.
 
 Settings in config.txt: the Task 1 settings (task1_conf, task1_refine, ...)
-also apply here. Set "task4_debug: 1" to also save the intermediate images
-(reading region, digit or scale crop) under output/task4/debug/imgX/.
+also apply here.
 """
 
 import os
@@ -56,9 +55,6 @@ import task3
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Output folder for the one-line readings
 OUTPUT_DIR = os.path.join(HERE, "output", "task4")
-
-# 1 = also save intermediate images per input
-DEFAULT_DEBUG = 0
 
 # The BPM display shows systolic, diastolic and pulse rows.
 BPM_ROWS = 3
@@ -119,12 +115,11 @@ def pick_reading_rows(rows):
     return [rows[row_idx] for row_idx in keep]
 
 
-def read_bpm(region, debug_dir=None):
+def read_bpm(region):
     """
     read_bpm: Read SYS, DIA and PULSE from a rectified LCD image
 
     :param region (np.ndarray): BGR LCD image from Task 1
-    :param debug_dir (str): if given, save the digit boxes and crops here
     :return: (list of row values as strings, list of per-digit confidences)
     """
     rows = task2.find_lcd_digits(region)
@@ -145,12 +140,6 @@ def read_bpm(region, debug_dir=None):
         offset += len(row)
         values.append("".join(str(digit) for digit, _ in row_results))
         confidences.extend(confidence for _, confidence in row_results)
-
-    if debug_dir:
-        save_output(os.path.join(debug_dir, "digits.png"), task2.draw_lcd_debug(region, rows),
-                    output_type='image')
-        for digit_idx, crop in enumerate(crops, start=1):
-            save_output(os.path.join(debug_dir, f"d{digit_idx}.png"), crop, output_type='image')
     return values, confidences
 
 
@@ -158,7 +147,7 @@ def read_bpm(region, debug_dir=None):
 # Thermometer
 # --------------------------------------------------------------------------- #
 
-def read_thermo(region, debug_dir=None):
+def read_thermo(region):
     """
     read_thermo: Read the temperature (float degC) from a rectified thermometer scale image
 
@@ -167,7 +156,6 @@ def read_thermo(region, debug_dir=None):
     (it does not need the crop, it is just cleaner with it)
 
     :param region (np.ndarray): BGR scale image from Task 1
-    :param debug_dir (str): if given, save the crop and the reading debug image here
     :return: temperature in degC (float)
     """
     try:
@@ -185,11 +173,6 @@ def read_thermo(region, debug_dir=None):
     print(f"  labels read: {labels} (confidence {info['label_conf']:.2f}), "
           f"{len(info['ticks'])} ticks, {info['deg_px']:.1f} px per degC")
     print(f"  temperature: {info['temp']:.2f} degC (from {info['method']})")
-
-    if debug_dir:
-        save_output(os.path.join(debug_dir, "t.png"), crop, output_type='image')
-        save_output(os.path.join(debug_dir, "reading.png"), task3.draw_thermo_debug(crop, info),
-                    output_type='image')
     return info["temp"]
 
 
@@ -197,25 +180,12 @@ def read_thermo(region, debug_dir=None):
 # Entry point
 # --------------------------------------------------------------------------- #
 
-def read_settings(config):
-    """
-    read_settings: Read the Task 1 settings (detection) plus the Task 4 debug switch
-
-    :param config (dict): key/value pairs from config.txt, or None
-    :return: dict with the Task 1 settings, where "debug" is the Task 4 switch
-    """
-    settings = task1.read_settings(config)
-    settings["debug"] = int((config or {}).get("task4_debug", DEFAULT_DEBUG)) != 0
-    return settings
-
-
-def process_image(img, settings, debug_dir=None):
+def process_image(img, settings):
     """
     process_image: Run the full pipeline for one photo
 
     :param img (np.ndarray): BGR photo
-    :param settings (dict): settings from read_settings
-    :param debug_dir (str): if given, save the intermediate images here
+    :param settings (dict): Task 1 settings from task1.read_settings
     :return: the output line ("bpm 118,78,70" / "thermo 37") (str), or None if no
              device was detected
     """
@@ -224,24 +194,21 @@ def process_image(img, settings, debug_dir=None):
         conf=settings["conf"],
         imgsz=settings["imgsz"],
         pad=settings["pad"],
-        refine=settings["refine"],      # debug_path is not passed: Task 4 saves its own debug images
+        refine=settings["refine"],
     )
     if extraction is None:
         return None
     class_name, region, confidence = extraction
     print(f"  detection: {class_name} (conf {confidence:.2f}), "
           f"region {region.shape[1]}x{region.shape[0]}")
-    if debug_dir:
-        prefix = task1.PREFIX.get(class_name, class_name)
-        save_output(os.path.join(debug_dir, f"{prefix}.png"), region, output_type='image')
 
     if class_name == "bpm":
-        values, confidences = read_bpm(region, debug_dir)
+        values, confidences = read_bpm(region)
         if confidences:
             print(f"  digits: {' '.join(values)} (lowest confidence {min(confidences):.2f})")
         return f"bpm {','.join(values)}"
     if class_name == "thermo":
-        temp = read_thermo(region, debug_dir)
+        temp = read_thermo(region)
         return f"thermo {task3.round_half_up(temp)}"
     raise RuntimeError(f"unknown device class: {class_name}")
 
@@ -259,7 +226,7 @@ def run_task4(image_path, config):
     print("TASK 4 - Processing images pipeline: detect device, segment reading, recognise reading")
     print("=============================================================")
 
-    settings = read_settings(config)
+    settings = task1.read_settings(config)
     images = task1.list_images(image_path)
     print(f"Note: {len(images)} image(s) in {image_path} ({settings})")
 
@@ -270,10 +237,9 @@ def run_task4(image_path, config):
         else:
             # Only a readable image goes through the pipeline
             name = os.path.splitext(os.path.basename(path))[0]
-            debug_dir = os.path.join(OUTPUT_DIR, "debug", name) if settings["debug"] else None
             print(f"[{os.path.basename(path)}]:")
             try:
-                line = process_image(img, settings, debug_dir)
+                line = process_image(img, settings)
                 if line is None:
                     print("  no device detected, no output")
                 else:

@@ -64,7 +64,6 @@ DEFAULT_CONF = 0.5  # Minimum detection confidence; below this the image counts 
 DEFAULT_IMGSZ = 960 # Inference image size, same as training
 DEFAULT_PAD = 0.0   # Grow the corner quad outwards by this fraction of its size
 DEFAULT_REFINE = 1  # 1 = refine the predicted corners with classical CV
-DEFAULT_DEBUG = 0   # 1 = also save debug_imgX.jpg with the predicted and refined corners
 
 # Edge searches run on a copy of the photo scaled to this longest side:
 # fast, and still about 4 px accuracy on a 4000 px photo.
@@ -560,7 +559,7 @@ def rectify(img, corners):
 
 
 def extract_reading_region(img, conf=DEFAULT_CONF, imgsz=DEFAULT_IMGSZ, pad=DEFAULT_PAD,
-                           refine=True, debug_path=None):
+                           refine=True):
     """
     extract_reading_region: Run the full Task 1 step for one image (shared with Task 4)
 
@@ -569,7 +568,6 @@ def extract_reading_region(img, conf=DEFAULT_CONF, imgsz=DEFAULT_IMGSZ, pad=DEFA
     :param imgsz (int): inference image size
     :param pad (float): fraction to grow the corner quad by before warping
     :param refine (bool): refine the predicted corners with classical CV
-    :param debug_path (str): if given, save a debug image of the corners here
     :return: (class_name, region_image, confidence), or None for a negative image
     """
     detection = detect_device(img, conf=conf, imgsz=imgsz)
@@ -586,44 +584,8 @@ def extract_reading_region(img, conf=DEFAULT_CONF, imgsz=DEFAULT_IMGSZ, pad=DEFA
                         else (predicted, False))
     print(f"  corners: {'refined' if refined else 'model prediction'}")
 
-    if debug_path:
-        save_debug(img, predicted, corners if refined else None, debug_path)
-
     corners = expand_quad(corners, pad)
     return class_name, rectify(img, corners), confidence
-
-
-def save_debug(img, predicted, refined, path):
-    """
-    save_debug: Save the photo with the model's corners (red) and the refined corners (green)
-
-    :param img (np.ndarray): BGR photo
-    :param predicted (np.ndarray): (4, 2) predicted corners
-    :param refined (np.ndarray): (4, 2) refined corners, or None if refinement was not used
-    :param path (str): destination image path
-    :return: None
-    """
-    annotated = img.copy()
-
-    # Line thickness scaled to the photo width
-    thickness = max(2, img.shape[1] // 500)
-    cv2.polylines(annotated, [predicted.astype(np.int32)], True, (0, 0, 255), thickness)
-    if refined is not None:
-        cv2.polylines(annotated, [refined.astype(np.int32)], True, (0, 255, 0), thickness)
-
-    # Number each final corner 0-3
-    for corner_idx, (corner_x, corner_y) in enumerate(refined if refined is not None else predicted):
-        cv2.putText(
-            annotated,
-            str(corner_idx),
-            (int(corner_x), int(corner_y)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            img.shape[1] / 1000,    # font scale relative to the photo width
-            (255, 0, 255),          # magenta
-            thickness,
-        )
-
-    save_output(path, annotated, output_type='image')
 
 
 # --------------------------------------------------------------------------- #
@@ -661,7 +623,7 @@ def read_settings(config):
     read_settings: Read the Task 1 settings from config.txt, falling back to the defaults
 
     :param config (dict): key/value pairs from config.txt, or None
-    :return: dict with "conf", "imgsz", "pad", "refine" and "debug"
+    :return: dict with "conf", "imgsz", "pad" and "refine"
     """
     config = config or {}
     return {
@@ -669,7 +631,6 @@ def read_settings(config):
         "imgsz": int(config.get("task1_imgsz", DEFAULT_IMGSZ)),
         "pad": float(config.get("task1_pad", DEFAULT_PAD)),
         "refine": int(config.get("task1_refine", DEFAULT_REFINE)) != 0,
-        "debug": int(config.get("task1_debug", DEFAULT_DEBUG)) != 0,
     }
 
 
@@ -698,8 +659,6 @@ def run_task1(image_path, config):
             # Only a readable image goes through extraction
             name = os.path.basename(path)
             number = image_number(path)
-            debug_path = (os.path.join(OUTPUT_DIR, "debug", f"debug_img{number}.jpg")
-                          if settings["debug"] else None)
             try:
                 print(f"[{name}]:")
                 extraction = extract_reading_region(
@@ -708,7 +667,6 @@ def run_task1(image_path, config):
                     imgsz=settings["imgsz"],
                     pad=settings["pad"],
                     refine=settings["refine"],
-                    debug_path=debug_path,      # None when debugging is off
                 )
                 if extraction is None:
                     print(f"  no device detected, no output")
