@@ -521,39 +521,36 @@ def harvest_real_lcd(photo_dir, exclude_hashes):
 
     for path in sorted(glob.glob(os.path.join(photo_dir, "*.jpg"))):
         name = os.path.splitext(os.path.basename(path))[0]
-        # Photos outside the known capture sessions have no label
+        # Photos outside the known capture sessions have no label; only labelled
+        # photos are used
         reading = reading_for(name)
-        if reading is None:
-            continue
+        if reading is not None:
+            # Hold out photos that are byte-identical to a validation image
+            if file_hash(path) in exclude_hashes:
+                print(f"  {name}: same photo as a validation image, held out")
+            else:
+                # Task 1: locate the device and extract its reading region; only BPM photos are used
+                detection = task1.extract_reading_region(cv2.imread(path))
+                if detection is None or detection[0] != "bpm":
+                    skipped += 1
+                else:
+                    region = detection[1]
 
-        # Skip photos that are byte-identical to a validation image
-        if file_hash(path) in exclude_hashes:
-            print(f"  {name}: same photo as a validation image, held out")
-            continue
+                    # Task 2: split the LCD into rows of digit boxes
+                    rows = task2.find_lcd_digits(region)
+                    expected = reading.split(",")
 
-        # Task 1: locate the device and extract its reading region; only BPM photos are used
-        detection = task1.extract_reading_region(cv2.imread(path))
-        if detection is None or detection[0] != "bpm":
-            skipped += 1
-            continue
-        region = detection[1]
-
-        # Task 2: split the LCD into rows of digit boxes
-        rows = task2.find_lcd_digits(region)
-        expected = reading.split(",")
-
-        # Keep the photo only when every row has as many digits as the expected reading
-        if [len(row) for row in rows] != [len(value) for value in expected]:
-            skipped += 1
-            continue
-
-        # Label each digit crop with the matching character of the reading
-        for row, value in zip(rows, expected):
-            for box, char in zip(row, value):
-                crop = cv2.cvtColor(task2.crop_box(region, box), cv2.COLOR_BGR2GRAY)
-                crops.append(crop)
-                labels.append(int(char))
-        used += 1
+                    # Keep the photo only when every row has as many digits as the expected reading
+                    if [len(row) for row in rows] != [len(value) for value in expected]:
+                        skipped += 1
+                    else:
+                        # Label each digit crop with the matching character of the reading
+                        for row, value in zip(rows, expected):
+                            for box, char in zip(row, value):
+                                crop = cv2.cvtColor(task2.crop_box(region, box), cv2.COLOR_BGR2GRAY)
+                                crops.append(crop)
+                                labels.append(int(char))
+                        used += 1
     print(f"  real LCD digits: {len(crops)} from {used} photo(s), {skipped} photo(s) skipped")
 
     return crops, np.array(labels, dtype=np.int64)
