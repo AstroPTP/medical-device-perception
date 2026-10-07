@@ -694,31 +694,32 @@ def run_task1(image_path, config):
         img = cv2.imread(path)
         if img is None:
             print(f"Could not read image: {path}")
-            continue
-
-        name = os.path.basename(path)
-        number = image_number(path)
-        debug_path = (os.path.join(OUTPUT_DIR, "debug", f"debug_img{number}.jpg")
-                      if settings["debug"] else None)
-        try:
-            print(f"[{name}]:")
-            extraction = extract_reading_region(
-                img,
-                conf=settings["conf"],
-                imgsz=settings["imgsz"],
-                pad=settings["pad"],
-                refine=settings["refine"],
-                debug_path=debug_path,      # None when debugging is off
-            )
-            if extraction is None:
-                print(f"  no device detected, no output")
-                continue
-            class_name, region, confidence = extraction
-            print(f"  {class_name} (conf {confidence:.2f}), region {region.shape[1]}x{region.shape[0]}")
-            # e.g. lcd2.png or thermo1.png
-            out_name = f"{PREFIX.get(class_name, class_name)}{number}.png"
-            save_output(os.path.join(OUTPUT_DIR, out_name), region, output_type='image')
-            print("------")
-        except Exception as error:
-            # One bad image must not stop the rest of the batch.
-            print(f"Task 1 failed on {path}: {error}")
+        else:
+            # Only a readable image goes through extraction
+            name = os.path.basename(path)
+            number = image_number(path)
+            debug_path = (os.path.join(OUTPUT_DIR, "debug", f"debug_img{number}.jpg")
+                          if settings["debug"] else None)
+            try:
+                print(f"[{name}]:")
+                extraction = extract_reading_region(
+                    img,
+                    conf=settings["conf"],
+                    imgsz=settings["imgsz"],
+                    pad=settings["pad"],
+                    refine=settings["refine"],
+                    debug_path=debug_path,      # None when debugging is off
+                )
+                if extraction is None:
+                    print(f"  no device detected, no output")
+                else:
+                    # Only a detected device produces an output file
+                    class_name, region, confidence = extraction
+                    print(f"  {class_name} (conf {confidence:.2f}), region {region.shape[1]}x{region.shape[0]}")
+                    # e.g. lcd2.png or thermo1.png
+                    out_name = f"{PREFIX.get(class_name, class_name)}{number}.png"
+                    save_output(os.path.join(OUTPUT_DIR, out_name), region, output_type='image')
+                    print("------")
+            except Exception as error:
+                # One bad image must not stop the rest of the batch.
+                print(f"Task 1 failed on {path}: {error}")
