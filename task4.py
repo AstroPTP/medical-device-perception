@@ -267,19 +267,20 @@ def run_task4(image_path, config):
         img = cv2.imread(path)
         if img is None:
             print(f"Could not read image: {path}")
-            continue
-
-        name = os.path.splitext(os.path.basename(path))[0]
-        debug_dir = os.path.join(OUTPUT_DIR, "debug", name) if settings["debug"] else None
-        print(f"[{os.path.basename(path)}]:")
-        try:
-            line = process_image(img, settings, debug_dir)
-            if line is None:
-                print("  no device detected, no output")
-                continue
-            print(f"  result: {line}")
-            save_output(os.path.join(OUTPUT_DIR, f"{name}.txt"), line, output_type='txt')
-            print("------")
-        except Exception as error:
-            # One bad image must not stop the rest of the batch.
-            print(f"Task 4 failed on {path}: {error}")
+        else:
+            # Only a readable image goes through the pipeline
+            name = os.path.splitext(os.path.basename(path))[0]
+            debug_dir = os.path.join(OUTPUT_DIR, "debug", name) if settings["debug"] else None
+            print(f"[{os.path.basename(path)}]:")
+            try:
+                line = process_image(img, settings, debug_dir)
+                if line is None:
+                    print("  no device detected, no output")
+                else:
+                    # Only a detected device produces an output file
+                    print(f"  result: {line}")
+                    save_output(os.path.join(OUTPUT_DIR, f"{name}.txt"), line, output_type='txt')
+                    print("------")
+            except Exception as error:
+                # One bad image must not stop the rest of the batch.
+                print(f"Task 4 failed on {path}: {error}")
