@@ -670,6 +670,7 @@ def run_task1(image_path, config):
                 )
                 if extraction is None:
                     print(f"  no device detected, no output")
+                    print("------")
                 else:
                     # Only a detected device produces an output file
                     class_name, region, confidence = extraction

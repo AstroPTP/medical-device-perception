@@ -242,6 +242,7 @@ def run_task4(image_path, config):
                 line = process_image(img, settings)
                 if line is None:
                     print("  no device detected, no output")
+                    print("------")
                 else:
                     # Only a detected device produces an output file
                     print(f"  result: {line}")
