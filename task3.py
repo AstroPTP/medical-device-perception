@@ -301,14 +301,12 @@ def find_liquid_top(profile, px_per_degree):
         sum_above, sum_below = cum_sum[split_y - 1], cum_sum[-1] - cum_sum[split_y - 1]
         sq_above, sq_below = cum_sq_sum[split_y - 1], cum_sq_sum[-1] - cum_sq_sum[split_y - 1]
 
-        # Liquid must be the stronger side
-        if sum_below / (length - split_y) <= sum_above / split_y:
-            continue
-
-        # Squared error of a two-level step fit
-        error = sq_above - sum_above ** 2 / split_y + sq_below - sum_below ** 2 / (length - split_y)
-        if best_error is None or error < best_error:
-            best_y, best_error = split_y, error
+        # Liquid must be the stronger side; only such splits are scored
+        if sum_below / (length - split_y) > sum_above / split_y:
+            # Squared error of a two-level step fit
+            error = sq_above - sum_above ** 2 / split_y + sq_below - sum_below ** 2 / (length - split_y)
+            if best_error is None or error < best_error:
+                best_y, best_error = split_y, error
     if best_y is None:
         return None
 
@@ -363,15 +361,15 @@ def find_label_rows(img, mask, band_left, tick_step):
     num_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     glyphs, dashes = [], []
 
-    # Sort blobs left of the band into digit glyphs and flat dashes (minus signs)
+    # Sort blobs left of the band into digit glyphs and flat dashes (minus
+    # signs); blobs reaching into the band are ignored
     for label in range(1, num_labels):
         box_x, box_y, box_width, box_height, _ = stats[label]
-        if box_x + box_width > band_left:
-            continue
-        if min_height <= box_height <= max_height and box_width <= 1.2 * box_height:
-            glyphs.append((box_x, box_y, box_width, box_height))
-        elif box_width >= 1.5 * box_height:
-            dashes.append((box_x, box_y, box_width, box_height))
+        if box_x + box_width <= band_left:
+            if min_height <= box_height <= max_height and box_width <= 1.2 * box_height:
+                glyphs.append((box_x, box_y, box_width, box_height))
+            elif box_width >= 1.5 * box_height:
+                dashes.append((box_x, box_y, box_width, box_height))
     if not glyphs:
         return []
 
@@ -441,25 +439,25 @@ def decode_labels(img, rows, px_per_degree):
 
     for top_value in SCALE_LABELS:
         values = [top_value - 10 * step for step in slot_steps]
-        if min(values) < SCALE_LABELS[-1]:
-            continue
 
-        # Log-likelihood of this candidate across all rows
-        score = 0.0
-        for row, glyph_probs, value in zip(rows, per_row, values):
-            text = str(abs(value))
+        # Only candidates whose labels all stay on the scale are scored
+        if min(values) >= SCALE_LABELS[-1]:
+            # Log-likelihood of this candidate across all rows
+            score = 0.0
+            for row, glyph_probs, value in zip(rows, per_row, values):
+                text = str(abs(value))
 
-            # Align from the right: the units digit is next to the tick
-            for pos in range(1, max(len(text), len(glyph_probs)) + 1):
-                if pos <= len(text) and pos <= len(glyph_probs):
-                    score += math.log(glyph_probs[-pos][int(text[-pos])] + eps)
-                else:
-                    # A glyph missing or extra
-                    score += math.log(0.02)
-            if row["minus"] != (value < 0):
-                # The dash is easy to miss
-                score += math.log(0.25)
-        scores[top_value] = score
+                # Align from the right: the units digit is next to the tick
+                for pos in range(1, max(len(text), len(glyph_probs)) + 1):
+                    if pos <= len(text) and pos <= len(glyph_probs):
+                        score += math.log(glyph_probs[-pos][int(text[-pos])] + eps)
+                    else:
+                        # A glyph missing or extra
+                        score += math.log(0.02)
+                if row["minus"] != (value < 0):
+                    # The dash is easy to miss
+                    score += math.log(0.25)
+            scores[top_value] = score
     if not scores:
         return None, 0.0
     best_top = max(scores, key=scores.get)
@@ -685,9 +683,10 @@ def process_lcd(in_dir, out_dir):
         img = cv2.imread(path)
         if img is None:
             print(f"  could not read {path}")
-            continue
-        crops.append(img)
-        names.append(os.path.splitext(os.path.basename(path))[0])
+        else:
+            # Only readable digit images are recognised
+            crops.append(img)
+            names.append(os.path.splitext(os.path.basename(path))[0])
 
     results = recognise_digits(crops)
 
