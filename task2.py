@@ -149,24 +149,23 @@ def merge_fragments(boxes, max_height, shape):
                 left_a, top_a, width_a, height_a = boxes[idx_a]
                 left_b, top_b, width_b, height_b = boxes[idx_b]
 
-                if not (is_piece(boxes[idx_a]) and is_piece(boxes[idx_b])):
-                    continue
+                # Only a pair of digit pieces is tested for merging
+                if is_piece(boxes[idx_a]) and is_piece(boxes[idx_b]):
+                    # Shared columns, and the vertical gap between the two boxes
+                    overlap = min(left_a + width_a, left_b + width_b) - max(left_a, left_b)
+                    gap = max(top_a, top_b) - min(top_a + height_a, top_b + height_b)
 
-                # Shared columns, and the vertical gap between the two boxes
-                overlap = min(left_a + width_a, left_b + width_b) - max(left_a, left_b)
-                gap = max(top_a, top_b) - min(top_a + height_a, top_b + height_b)
+                    # Union of the two boxes
+                    union_left, union_top = min(left_a, left_b), min(top_a, top_b)
+                    union_right = max(left_a + width_a, left_b + width_b)
+                    union_bottom = max(top_a + height_a, top_b + height_b)
 
-                # Union of the two boxes
-                union_left, union_top = min(left_a, left_b), min(top_a, top_b)
-                union_right = max(left_a + width_a, left_b + width_b)
-                union_bottom = max(top_a + height_a, top_b + height_b)
-
-                if (overlap >= 0.5 * min(width_a, width_b) and gap <= 0.15 * max_height
-                        and union_bottom - union_top <= 1.1 * max_height):
-                    boxes[idx_a] = [union_left, union_top, union_right - union_left, union_bottom - union_top]
-                    del boxes[idx_b]
-                    merged = True
-                    break
+                    if (overlap >= 0.5 * min(width_a, width_b) and gap <= 0.15 * max_height
+                            and union_bottom - union_top <= 1.1 * max_height):
+                        boxes[idx_a] = [union_left, union_top, union_right - union_left, union_bottom - union_top]
+                        del boxes[idx_b]
+                        merged = True
+                        break
 
             if merged:
                 break
@@ -256,26 +255,24 @@ def find_lcd_digits(img):
     # Label 0 is the background
     for label in range(1, num_labels):
         # The LCD holds three rows of digits, so a real digit is well under
-        # half the image height. Bezel edges and shadows along the border are
-        # far taller (or wider, caught by the aspect test below)
-        if stats[label, cv2.CC_STAT_HEIGHT] > 0.45 * height:
-            continue
+        # half the image height. Only such blobs are kept; bezel edges and
+        # shadows along the border are far taller (or wider, caught by the
+        # aspect test below)
+        if stats[label, cv2.CC_STAT_HEIGHT] <= 0.45 * height:
+            # Tight box from the undilated segment pixels of this blob, using its
+            # x and y distributions (column and row pixel counts)
+            blob_x, blob_y, blob_width, blob_height, _ = stats[label]
+            blob = ((label_image[blob_y:blob_y + blob_height, blob_x:blob_x + blob_width] == label)
+                    & (mask[blob_y:blob_y + blob_height, blob_x:blob_x + blob_width] > 0))
 
-        # Tight box from the undilated segment pixels of this blob, using its
-        # x and y distributions (column and row pixel counts)
-        blob_x, blob_y, blob_width, blob_height, _ = stats[label]
-        blob = ((label_image[blob_y:blob_y + blob_height, blob_x:blob_x + blob_width] == label)
-                & (mask[blob_y:blob_y + blob_height, blob_x:blob_x + blob_width] > 0))
-        
-        x_distribution = np.sum(blob, axis=0)
-        y_distribution = np.sum(blob, axis=1)
-        ink_cols, ink_rows = np.nonzero(x_distribution)[0], np.nonzero(y_distribution)[0]
+            x_distribution = np.sum(blob, axis=0)
+            y_distribution = np.sum(blob, axis=1)
+            ink_cols, ink_rows = np.nonzero(x_distribution)[0], np.nonzero(y_distribution)[0]
 
-        if len(ink_cols) == 0:
-            continue
-
-        blobs.append((blob_x + ink_cols[0], blob_y + ink_rows[0],
-                      ink_cols[-1] + 1 - ink_cols[0], ink_rows[-1] + 1 - ink_rows[0]))
+            # Only a blob with segment pixels gives a box
+            if len(ink_cols) > 0:
+                blobs.append((blob_x + ink_cols[0], blob_y + ink_rows[0],
+                              ink_cols[-1] + 1 - ink_cols[0], ink_rows[-1] + 1 - ink_rows[0]))
 
     # Seven-segment digits are clearly taller than wide; icons like "OK" or
     # the heart are roughly square. Even a "1" is a solid bar, though, unlike
@@ -511,15 +508,15 @@ def find_scale_labels(mask, liquid_x):
     num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
 
     # Label digits are compact, glyph-sized blobs left of the tube. Tick marks
-    # are thin and wide, so the aspect test removes them
+    # are thin and wide, so the aspect test removes them. A blob is kept only
+    # if it passes the size, aspect and left-of-tube tests
     glyphs = []
     for label in range(1, num_labels):
         box_x, box_y, box_width, box_height, _ = stats[label]
-        if not (0.04 * width <= box_height <= 0.15 * width):
-            continue
-        if box_width > 1.2 * box_height or box_x + box_width > liquid_x - 0.08 * width:
-            continue
-        glyphs.append((centroids[label][1], box_height))
+        if (0.04 * width <= box_height <= 0.15 * width
+                and box_width <= 1.2 * box_height
+                and box_x + box_width <= liquid_x - 0.08 * width):
+            glyphs.append((centroids[label][1], box_height))
     if not glyphs:
         return []
 
@@ -805,21 +802,21 @@ def run_task2(image_path, config):
         img = cv2.imread(path)
         if img is None:
             print(f"Could not read image: {path}")
-            continue
+        else:
+            # Only a readable image is segmented
+            name = os.path.splitext(os.path.basename(path))[0]
+            out_dir = os.path.join(OUTPUT_DIR, name)
+            print(f"[{os.path.basename(path)}]:")
 
-        name = os.path.splitext(os.path.basename(path))[0]
-        out_dir = os.path.join(OUTPUT_DIR, name)
-        print(f"[{os.path.basename(path)}]:")
-
-        try:
-            if is_thermometer(path, img):
-                debug_image = process_thermo(img, out_dir)
-            else:
-                debug_image = process_lcd(img, out_dir)
-            if settings["debug"]:
-                save_output(os.path.join(OUTPUT_DIR, "debug", f"debug_{name}.png"), debug_image,
-                            output_type='image')
-            print("------")
-        except Exception as error:
-            # One bad image must not stop the rest of the batch
-            print(f"Task 2 failed on {path}: {error}")
+            try:
+                if is_thermometer(path, img):
+                    debug_image = process_thermo(img, out_dir)
+                else:
+                    debug_image = process_lcd(img, out_dir)
+                if settings["debug"]:
+                    save_output(os.path.join(OUTPUT_DIR, "debug", f"debug_{name}.png"), debug_image,
+                                output_type='image')
+                print("------")
+            except Exception as error:
+                # One bad image must not stop the rest of the batch
+                print(f"Task 2 failed on {path}: {error}")
