@@ -41,6 +41,7 @@ runs/task3/.
 """
 
 import argparse
+import csv
 import glob
 import hashlib
 import os
@@ -61,13 +62,22 @@ import task2
 import task3
 
 HERE = os.path.dirname(os.path.abspath(__file__))               # Absolute path of the directory containing this script, so paths resolve from any working directory
-DEFAULT_PHOTOS = os.path.join(HERE, "..", "unlabelled_data")    # Default folder of unlabelled BPM photos, used when --photos is not given
-DEFAULT_VALIDATION = os.path.join(HERE, "..", "validation")     # Default validation set folder, used when --validation is not given
+DEFAULT_PHOTOS = os.path.join(HERE, "unlabelled_data")          # Default folder of BPM photos, used when --photos is not given
+DEFAULT_VALIDATION = os.path.join(HERE, "validation")           # Default validation set folder, used when --validation is not given
 WEIGHTS_OUT = task3.MODEL_PATH                                  # Checkpoint path shared with task3.py, so training and inference use the same file
 RUNS_DIR = os.path.join(HERE, "runs", "task3")                  # Output folder for the sample grids and confusion matrix images
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp")                  # File extensions treated as photos
 
-# Readings shown on the BPM in each capture session of the unlabelled photos
-# (photo names are <date>_<time>), read off the photos by hand
+# Optional label files. With your own data, put these next to the images (or
+# pass --readings / --validation-labels); without them the built-in tables
+# below, which describe the original dataset, are used.
+#   <photos>/readings.csv            photo,reading      e.g. IMG_0001.jpg,"118,78,70"
+#   <validation>/task3_labels.csv    folder,digits      e.g. lcd2,1359365
+READINGS_FILE = "readings.csv"
+VALIDATION_LABELS_FILE = "task3_labels.csv"
+
+# Built-in labels for the original photos. Readings shown on the BPM in each
+# capture session (photo names are <date>_<time>), read off the photos by hand
 # (date, first time, last time, "SYS,DIA,PULSE")
 LCD_READINGS = [
     ("20260802", "164700", "164759", "135,93,65"),
@@ -483,14 +493,66 @@ def file_hash(path):
         return hashlib.md5(file.read()).hexdigest()
 
 
-def reading_for(photo_name):
+def read_label_csv(path, key_column, value_column):
     """
-    reading_for: Look up the LCD reading for a photo from its capture time
+    read_label_csv: Read a two-column label file into a dictionary
 
-    :param photo_name (str): photo file name without extension, formatted <date>_<time>
-    :return: reading as "SYS,DIA,PULSE" (str), or None when no capture session matches
+    :param path (str): CSV file with a header row naming the columns
+    :param key_column (str): column used as the key (file extension removed)
+    :param value_column (str): column used as the value
+    :return: dict of key -> value (str)
     """
-    # Names without both a date and a time part cannot be matched
+    labels = {}
+    with open(path, newline="") as file:
+        for row in csv.DictReader(file):
+            key = os.path.splitext(row[key_column].strip())[0]
+            labels[key] = row[value_column].strip().replace(" ", "")
+    print(f"  {len(labels)} label(s) read from {path}")
+    return labels
+
+
+def find_label_file(explicit_path, folder, default_name):
+    """
+    find_label_file: Pick the label file to use: the one given on the command
+    line, else the default-named file inside the data folder, if present
+
+    :param explicit_path (str or None): path from the command line
+    :param folder (str): data folder searched for default_name
+    :param default_name (str): file name looked for inside folder
+    :return: path of the label file (str), or None to use the built-in labels
+    """
+    if explicit_path:
+        if not os.path.isfile(explicit_path):
+            raise SystemExit(f"Label file not found: {explicit_path}")
+        return explicit_path
+    candidate = os.path.join(folder, default_name)
+    return candidate if os.path.isfile(candidate) else None
+
+
+def list_photos(folder):
+    """
+    list_photos: List the image files directly inside a folder, sorted by name
+
+    :param folder (str): folder to search
+    :return: list of image paths (str)
+    """
+    return sorted(path for path in glob.glob(os.path.join(folder, "*"))
+                  if path.lower().endswith(IMAGE_EXTS))
+
+
+def reading_for(photo_name, readings=None):
+    """
+    reading_for: Look up the LCD reading for a photo, from the label file when
+    one was given, otherwise from the built-in capture-session table
+
+    :param photo_name (str): photo file name without extension
+    :param readings (dict or None): photo name -> "SYS,DIA,PULSE" from readings.csv
+    :return: reading as "SYS,DIA,PULSE" (str), or None when the photo has no label
+    """
+    if readings is not None:
+        return readings.get(photo_name)
+
+    # Built-in table: names are <date>_<time>; others cannot be matched
     parts = photo_name.split("_")
     if len(parts) < 2:
         return None
@@ -504,7 +566,7 @@ def reading_for(photo_name):
     return None
 
 
-def harvest_real_lcd(photo_dir, exclude_hashes):
+def harvest_real_lcd(photo_dir, exclude_hashes, readings=None):
     """
     harvest_real_lcd: Collect labelled real digit crops from the BPM photos
 
@@ -512,18 +574,23 @@ def harvest_real_lcd(photo_dir, exclude_hashes):
     segmentation). The crops are only kept when the row lengths match the
     known reading, so every crop gets the right label
 
-    :param photo_dir (str): folder containing the unlabelled .jpg photos
+    :param photo_dir (str): folder containing the BPM photos
     :param exclude_hashes (set): MD5 hashes of photos that must not be used
+    :param readings (dict or None): photo name -> reading from readings.csv;
+        None uses the built-in table
     :return: list of grayscale digit crops and their labels (np.ndarray, int64)
     """
     crops, labels = [], []
     used, skipped = 0, 0
 
-    for path in sorted(glob.glob(os.path.join(photo_dir, "*.jpg"))):
+    if not os.path.isdir(photo_dir):
+        print(f"  photo folder {photo_dir} not found: training on synthetic digits only")
+        return crops, np.array(labels, dtype=np.int64)
+
+    for path in list_photos(photo_dir):
         name = os.path.splitext(os.path.basename(path))[0]
-        # Photos outside the known capture sessions have no label; only labelled
-        # photos are used
-        reading = reading_for(name)
+        # Photos without a known reading have no label; only labelled photos are used
+        reading = reading_for(name, readings)
         if reading is not None:
             # Hold out photos that are byte-identical to a validation image
             if file_hash(path) in exclude_hashes:
@@ -556,16 +623,20 @@ def harvest_real_lcd(photo_dir, exclude_hashes):
     return crops, np.array(labels, dtype=np.int64)
 
 
-def validation_lcd(validation_dir):
+def validation_lcd(validation_dir, folder_labels=None):
     """
     validation_lcd: Load the held-out validation digit crops and their labels, if
     available
 
     :param validation_dir (str): validation set folder containing task3/lcdX subfolders
+    :param folder_labels (dict or None): folder -> digits from task3_labels.csv;
+        None uses the built-in VALIDATION_LCD_LABELS
     :return: list of digit crops (BGR) and their labels (np.ndarray, int64)
     """
     crops, labels = [], []
-    for folder, digits in VALIDATION_LCD_LABELS.items():
+    if folder_labels is None:
+        folder_labels = VALIDATION_LCD_LABELS
+    for folder, digits in folder_labels.items():
         # Crops are named d1.png, d2.png, ... in reading order; missing files are skipped
         for position, char in enumerate(digits, start=1):
             img = cv2.imread(os.path.join(validation_dir, "task3", folder, f"d{position}.png"))
@@ -735,9 +806,17 @@ def main():
     # Command-line options; every option has a default, so the script runs with no arguments
     parser = argparse.ArgumentParser(description="Train the Task 3 digit classifiers")
     # Folder of unlabelled BPM photos used for the real LCD digits
-    parser.add_argument("--photos", default=DEFAULT_PHOTOS, help="unlabelled photo directory")
+    parser.add_argument("--photos", default=DEFAULT_PHOTOS,
+                        help="folder of BPM photos (default: ./unlabelled_data)")
+    # Labels for those photos; default <photos>/readings.csv, else the built-in table
+    parser.add_argument("--readings", default=None,
+                        help=f"CSV with columns photo,reading (default: <photos>/{READINGS_FILE})")
     # Validation set, held out from training and used for the final report
-    parser.add_argument("--validation", default=DEFAULT_VALIDATION, help="validation set directory")
+    parser.add_argument("--validation", default=DEFAULT_VALIDATION,
+                        help="validation set folder (default: ./validation)")
+    # Labels for the validation digit folders; default <validation>/task3_labels.csv
+    parser.add_argument("--validation-labels", default=None,
+                        help=f"CSV with columns folder,digits (default: <validation>/{VALIDATION_LABELS_FILE})")
     # Number of synthetic digits rendered for each network
     parser.add_argument("--synthetic", type=int, default=30000, help="synthetic digits per network")
     parser.add_argument(
@@ -764,10 +843,18 @@ def main():
 
     # Photos that are also validation images must not be trained on.
     exclude_hashes = {file_hash(photo_path)
-                      for photo_path in glob.glob(os.path.join(args.validation, "*", "*.jpg"))}
+                      for photo_path in glob.glob(os.path.join(args.validation, "*", "*"))
+                      if photo_path.lower().endswith(IMAGE_EXTS)}
+
+    # Label files: given on the command line, found in the data folders, or the built-in tables
+    readings_path = find_label_file(args.readings, args.photos, READINGS_FILE)
+    readings = read_label_csv(readings_path, "photo", "reading") if readings_path else None
+    val_labels_path = find_label_file(args.validation_labels, args.validation, VALIDATION_LABELS_FILE)
+    val_folder_labels = (read_label_csv(val_labels_path, "folder", "digits")
+                         if val_labels_path else None)
 
     print("Collecting LCD digits")
-    real_crops, real_labels = harvest_real_lcd(args.photos, exclude_hashes)
+    real_crops, real_labels = harvest_real_lcd(args.photos, exclude_hashes, readings)
     # Each real crop once as is, then args.real_copies augmented copies of every crop
     real_inputs = [to_uint8(task3.prepare_digit(crop)) for crop in real_crops]
 
@@ -823,7 +910,7 @@ def main():
     # Evaluate on the CPU, where train_model returns the networks
     report("LCD synthetic hold-out", lcd_val_labels, predict(lcd_model, lcd_val_inputs, "cpu"))
     # Real validation digits, only when the validation folder is available
-    val_crops, val_labels = validation_lcd(args.validation)
+    val_crops, val_labels = validation_lcd(args.validation, val_folder_labels)
     if len(val_crops):
         val_inputs = np.array([to_uint8(task3.prepare_digit(crop)) for crop in val_crops])
         report("LCD validation digits", val_labels, predict(lcd_model, val_inputs, "cpu"))

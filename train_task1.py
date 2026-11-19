@@ -41,13 +41,11 @@ from ultralytics.utils import loss as yolo_loss
 
 # Absolute path of the directory containing this script, so paths resolve from any working directory
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Default Roboflow YOLOv8 pose export, used when --data is not given
-DEFAULT_DATA = os.path.join(
-    HERE,
-    "..",                                     # parent of the assignment folder
-    "dataset",                                # shared dataset folder
-    "medical-device-perception.v5i.yolov8",   # Roboflow export, version 5
-)
+# Default dataset folder (a YOLOv8 pose export with a data.yaml), used when --data
+# is not given. Any other folder in the same format can be passed with --data
+DEFAULT_DATA = os.path.join(HERE, "dataset")
+# Split folders tried when data.yaml does not name them (Roboflow's layout)
+DEFAULT_SPLITS = {"train": "train/images", "val": "valid/images", "test": "test/images"}
 # Destination of the best checkpoint, loaded by task1.py at inference time
 WEIGHTS_OUT = os.path.join(HERE, "data", "task1_pose.pt")
 
@@ -103,33 +101,76 @@ def set_keypoint_sigma(sigma):
     yolo_loss.v8PoseLoss.__init__ = loss_init
     PoseValidator.init_metrics = init_metrics
 
+def resolve_split(dataset_dir, value):
+    """
+    resolve_split: Find a split's image folder from its data.yaml entry
+
+    Exports disagree on what split paths are relative to (Roboflow writes
+    "../train/images" although the folder sits next to data.yaml), so the
+    entry is tried as given, relative to the dataset folder, and with any
+    leading "../" removed
+
+    :param dataset_dir (str): absolute dataset folder (the one holding data.yaml)
+    :param value (str): split path from data.yaml
+    :return: absolute path of the existing folder (str), or None if none exists
+    """
+    candidates = [value, os.path.join(dataset_dir, value)]
+    stripped = value
+    while stripped.startswith(("../", "..\\")):
+        stripped = stripped[3:]
+    candidates.append(os.path.join(dataset_dir, stripped))
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return os.path.abspath(candidate)
+    return None
+
+
 def write_dataset_yaml(dataset_dir, out_path):
     """
-    write_dataset_yaml: Write a corrected copy of the Roboflow data.yaml
+    write_dataset_yaml: Write a corrected copy of the dataset's data.yaml
 
-    The export sets flip_idx to [0, 1, 2, 3], which is wrong: a horizontal
+    Works with any YOLOv8 pose dataset whose labels are one box plus the four
+    reading-region corners (top-left, top-right, bottom-right, bottom-left)
+
+    The Roboflow export sets flip_idx to [0, 1, 2, 3], which is wrong: a horizontal
     flip turns the top-left corner into the top-right one (and bottom-right
     into bottom-left), so the keypoint indices must be swapped as [1, 0, 3, 2].
     Without this, flip augmentation teaches the model mirrored corner orders
     Absolute paths are also used so training works from any directory
 
-    :param dataset_dir (str): path to the Roboflow YOLOv8 export directory
+    :param dataset_dir (str): path to the YOLOv8 pose dataset folder (holding data.yaml)
     :param out_path (str): destination path for the corrected YAML file
     :return: path of the written YAML file (str)
     """
     dataset_dir = os.path.abspath(dataset_dir)
-    with open(os.path.join(dataset_dir, "data.yaml")) as file:
+    yaml_path = os.path.join(dataset_dir, "data.yaml")
+    if not os.path.isfile(yaml_path):
+        raise SystemExit(f"No data.yaml found in {dataset_dir}. "
+                         "Pass the dataset folder with --data")
+    with open(yaml_path) as file:
         source = yaml.safe_load(file)
 
+    # The pipeline needs exactly four corner keypoints per device
+    kpt_shape = source.get("kpt_shape", [4, 3])
+    if kpt_shape[0] != 4:
+        raise SystemExit(f"{yaml_path}: kpt_shape is {kpt_shape}, but Task 1 expects 4 corner keypoints")
+
+    # Split folders from data.yaml, falling back to the Roboflow layout
+    splits = {}
+    for split, default in DEFAULT_SPLITS.items():
+        folder = resolve_split(dataset_dir, str(source.get(split) or default))
+        if folder is not None:
+            splits[split] = folder
+        elif split != "test":         # test split is optional
+            raise SystemExit(f"{yaml_path}: could not find the '{split}' image folder")
+
     config = {
-        "path": dataset_dir,          # absolute dataset root; split folders below are relative to it
-        "train": "train/images",
-        "val": "valid/images",
-        "test": "test/images",
-        "kpt_shape": [4, 3],          # 4 corner keypoints, each stored as (x, y, visibility)
+        "path": dataset_dir,          # dataset root; the split folders below are absolute
+        **splits,
+        "kpt_shape": list(kpt_shape), # 4 corner keypoints, (x, y) or (x, y, visibility)
         "flip_idx": [1, 0, 3, 2],     # corrected horizontal-flip mapping: swap left and right corners
-        "nc": source["nc"],           # class count kept from the Roboflow export
-        "names": source["names"],     # class names (bpm, thermo) kept from the Roboflow export
+        "nc": source["nc"],           # class count kept from the dataset
+        "names": source["names"],     # class names (bpm, thermo) kept from the dataset
     }
     with open(out_path, "w") as file:
         yaml.safe_dump(config, file, sort_keys=False)
@@ -144,8 +185,9 @@ def main():
     """
     # Command-line options; every option has a default, so the script runs with no arguments.
     parser = argparse.ArgumentParser(description="Train the Task 1 YOLOv8n-pose detector")
-    # Dataset location (Roboflow YOLOv8 pose export).
-    parser.add_argument("--data", default=DEFAULT_DATA, help="Roboflow YOLOv8 export directory")
+    # Dataset location (YOLOv8 pose format, e.g. a Roboflow export).
+    parser.add_argument("--data", default=DEFAULT_DATA,
+                        help="YOLOv8 pose dataset folder containing data.yaml (default: ./dataset)")
     # Maximum number of training epochs; early stopping may end training sooner.
     parser.add_argument("--epochs", type=int, default=150)
     # Training image size in pixels; 960 keeps small LCD digits and scale marks visible.
