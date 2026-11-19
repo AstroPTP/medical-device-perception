@@ -9,6 +9,8 @@ img2.jpg  ->  bpm 135,93,65
 img1.jpg  ->  thermo 18
 ```
 
+![BPM pipeline: a photo with perspective distortion is detected, rectified, segmented into digits and read as bpm 134,88,75](docs/images/pipeline_bpm.jpg)
+
 It combines a fine-tuned **YOLOv8-pose** detector, **classical OpenCV geometry** for sub-pixel-level corner refinement and segmentation, and a **custom PyTorch CNN** trained mostly on **synthetic data** I generated myself.
 
 > **University assignment:** COMP3007 Machine Perception, Curtin University, Semester 2 2026.
@@ -72,9 +74,16 @@ Example end-to-end outputs on the validation set:
 | img5 | `bpm 134,89,72` |
 | img1 | `thermo 18` |
 
-<!-- Suggested: add a pipeline figure here, e.g.
-![Pipeline](docs/images/pipeline.png)
--->
+The same pipeline on the rotated thermometer: the scale is straightened with 50 °C at the top, then the reading is interpolated from the liquid top and the 1 °C ticks.
+
+![Thermometer pipeline: the rotated thermometer is detected, rectified upright, cropped around the liquid top and read as thermo 18](docs/images/pipeline_thermo.jpg)
+
+<details>
+<summary><b>Detector training curves</b> (YOLOv8n-pose, 150 epochs)</summary>
+
+![Training and validation losses, precision, recall and mAP over 150 epochs](docs/images/task1_training_curves.png)
+
+</details>
 
 ## How it works
 
@@ -105,6 +114,23 @@ Pure OpenCV. All thresholds are relative to image size, so nothing depends on in
 - **DigitCNN:** a small VGG-style network (~0.5 M parameters, 48×32 grayscale input) that runs quickly on a CPU. Digits are resized with their aspect ratio kept, because a narrow `1` is part of what makes it a `1`.
 - Two copies are trained ([train_task3.py](train_task3.py)): `lcd` for seven-segment digits (real and synthetic) and `print` for the thermometer's printed numerals (synthetic only).
 - **Thermometer reading:** find the 1 °C ticks and their spacing, read the labels with the `print` network, decode them jointly under the constraint that they go down in steps of 10 °C, then interpolate the liquid-top position to a temperature.
+
+Samples from the synthetic seven-segment renderer, as the network sees them (inverted, aspect ratio kept). Note the varied segment shapes, faint unlit "ghost" segments, blur, noise and crop jitter:
+
+![Grid of 100 procedurally rendered seven-segment digits](docs/images/synthetic_lcd_digits.png)
+
+<details>
+<summary><b>More: printed-digit samples and confusion matrix</b></summary>
+
+Synthetic printed numerals for the thermometer scale:
+
+![Grid of 100 synthetic printed digits](docs/images/synthetic_printed_digits.png)
+
+LCD network on the synthetic hold-out set:
+
+<img src="docs/images/confusion_lcd_synthetic.png" alt="Confusion matrix of the LCD digit network on synthetic hold-out data" width="420">
+
+</details>
 
 ### Task 4: End-to-end ([task4.py](task4.py))
 
@@ -200,6 +226,7 @@ If no label files are found, the script uses the built-in labels for the origina
 ├── train_task1.py     # YOLOv8-pose fine-tuning
 ├── train_task3.py     # Synthetic data generation + CNN training
 ├── data/              # Trained weights
+├── docs/images/       # Figures used in this README
 └── comp3007.yml       # Conda environment
 ```
 
