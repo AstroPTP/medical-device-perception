@@ -2,6 +2,8 @@
 
 Thanks for your interest in this project! It began as my solution to the COMP3007 Machine Perception assignment at Curtin University (Semester 2, 2026). It's now a finished portfolio piece, but bug reports, questions and improvements are welcome.
 
+Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Academic integrity
 
 **If you are a student taking COMP3007, or a similar unit, do not copy this code into your own assignment.** Submitting someone else's work is plagiarism under Curtin's academic integrity policy, whatever this repository's license says. You're welcome to read it to understand the techniques, then write your own solution.
