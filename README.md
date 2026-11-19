@@ -213,3 +213,9 @@ If no label files are found, the script uses the built-in labels for the origina
 ## Author
 
 **Thanh Phu Phan** · [GitHub @AstroPTP](https://github.com/AstroPTP)
+
+## License
+
+Copyright 2026 Thanh Phu Phan. Released under the [Apache License 2.0](LICENSE).
+
+[assignment.py](assignment.py) is the assignment framework provided by the COMP3007 teaching staff at Curtin University and is included only so the tasks can be run. It is not covered by my copyright.

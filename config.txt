@@ -2,7 +2,6 @@
 # Student Information
 Surname: Phan
 GivenNames: Thanh Phu
-StudentID: 21664322
 
 # Hyperparameters
 learning_rate: 0.001
