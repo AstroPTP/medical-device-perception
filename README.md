@@ -11,7 +11,7 @@ img1.jpg  ->  thermo 18
 
 ![BPM pipeline: a photo with perspective distortion is detected, rectified, segmented into digits and read as bpm 134,88,75](docs/images/pipeline_bpm.jpg)
 
-It combines a fine-tuned **YOLOv8-pose** detector, **classical OpenCV geometry** for sub-pixel-level corner refinement and segmentation, and a **custom PyTorch CNN** trained mostly on **synthetic data** I generated myself.
+It combines a fine-tuned **YOLOv8-pose** detector, **classical OpenCV geometry** for precise corner refinement and segmentation, and a **custom PyTorch CNN** trained mostly on **synthetic data** I generated myself.
 
 > **University assignment:** COMP3007 Machine Perception, Curtin University, Semester 2 2026.
 > Python · PyTorch · Ultralytics YOLOv8 · OpenCV · NumPy · scikit-learn
@@ -49,7 +49,7 @@ The four tasks below (detection, segmentation, recognition, full pipeline) follo
 ## Highlights
 
 - **Hybrid learned + classical design.** The neural network does what it is good at (finding and roughly locating the device); classical CV does what it is good at (pixel-accurate edges and lines). Each stage hands the next one a cleaner, simpler problem.
-- **Keypoint detection for orientation.** Instead of a plain bounding box, the detector predicts the four corners of the reading region *in the device's own reading order*, so one perspective warp fixes rotation, tilt and perspective at once, even for upside-down photos.
+- **Keypoint detection for orientation.** Instead of a plain bounding box, the detector predicts the four corners of the reading region *in the device's own reading order*, so one perspective warp fixes rotation, tilt and perspective at once, and the output always comes out the right way up.
 - **Hough-style corner refinement.** YOLO's corners can be tens of pixels off. Each LCD border is re-found by searching small shifts and rotations around the predicted line for the strongest dark-to-bright edge, and the corners are rebuilt from the line intersections. For thermometers, the glass tube's direction gives the true rotation.
 - **Synthetic training data.** I had only ~200 real digit crops and none of them showed a `0`. To cover that, I wrote a renderer for seven-segment digits (random segment shapes, unlit "ghost" segments, lighting, blur, noise, rotation, crop jitter) and for printed scale numerals (multiple fonts, condensing, neighbouring glyphs).
 - **Robust thermometer decoding.** The printed scale labels are decoded *jointly*: every possible value for the top label is scored against the network's reads of all labels, so one misread glyph gets outvoted. The final temperature is interpolated between the 1 °C ticks either side of the liquid top.
@@ -198,6 +198,8 @@ dataset/                 # default location, or pass --data
 python train_task1.py --data path/to/your/dataset --epochs 150 --imgsz 960
 ```
 
+Training starts from the COCO-pretrained `yolov8n-pose.pt`, which Ultralytics downloads automatically on the first run. The best checkpoint is copied to `data/task1_pose.pt`.
+
 The script writes a corrected copy of `data.yaml` to `runs/`, with absolute paths and a fixed `flip_idx` that swaps left and right corners under horizontal flips. Split paths are read from `data.yaml`; Roboflow's `../train/images` style is handled.
 
 **Digit classifier (`train_task3.py`).** Trains mostly on synthetic digits, so it runs even with no photos. Real BPM photos are optional and improve the LCD network:
@@ -225,9 +227,12 @@ If no label files are found, the script uses the built-in labels for the origina
 ├── task4.py           # End-to-end pipeline
 ├── train_task1.py     # YOLOv8-pose fine-tuning
 ├── train_task3.py     # Synthetic data generation + CNN training
+├── config.txt         # Optional runtime settings (task1_conf, ...)
 ├── data/              # Trained weights
 ├── docs/images/       # Figures used in this README
-└── comp3007.yml       # Conda environment
+├── comp3007.yml       # Conda environment
+├── CONTRIBUTING.md    # How to report issues and contribute
+└── LICENSE            # Apache 2.0
 ```
 
 ## What I learned
@@ -236,6 +241,10 @@ If no label files are found, the script uses the built-in labels for the origina
 - **Loss design matters more than epochs.** I tried tightening the keypoint OKS sigma from Ultralytics' default (0.25) to 0.05 for sharper corners. It made results *worse*: the loss saturated for far-off corners, so they got almost no gradient, and the thermometer corners collapsed. Keeping the loose sigma and refining classically worked better.
 - **Synthetic data covers rare and missing classes.** A procedural renderer filled gaps (such as the digit `0`) that the real data could never cover.
 - **Use structure as a prior.** Reading thermometer labels jointly, using the known 10 °C spacing, is far more robust than trusting each digit on its own.
+
+## Contributing
+
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). If you're a student taking a similar unit, please read its academic integrity note first.
 
 ## Author
 
