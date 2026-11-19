@@ -1,0 +1,101 @@
+name: Bug report
+description: Something crashes, or a reading comes out wrong
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem! Please fill in as much as you can.
+        Only attach photos you have the right to share.
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Which stage is affected?
+      options:
+        - "Task 1: detection / rectification"
+        - "Task 2: segmentation"
+        - "Task 3: digit recognition / thermometer reading"
+        - "Task 4: full pipeline"
+        - "Training (train_task1.py / train_task3.py)"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device type
+      options:
+        - Blood pressure monitor (BPM)
+        - Thermometer
+        - No device (negative image)
+        - Not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the problem. For a wrong reading, give the expected and the actual output.
+      placeholder: |
+        Expected: bpm 134,88,75
+        Actual:   bpm 134,88,7
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      render: bash
+      placeholder: python assignment.py task4 path/to/photos
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Terminal output
+      description: Paste the full output, including any traceback.
+      render: text
+
+  - type: textarea
+    id: images
+    attributes:
+      label: Example image(s)
+      description: |
+        Drag and drop a photo that reproduces the problem, if you can share one.
+        For Task 1 problems, the image in output/task1/ also helps.
+
+  - type: input
+    id: config
+    attributes:
+      label: config.txt settings
+      description: Any task1_* settings you changed from the defaults
+      placeholder: "task1_conf: 0.6, task1_refine: 1"
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Output of:
+        python -c "import sys, torch, cv2, ultralytics; print(sys.version, torch.__version__, cv2.__version__, ultralytics.__version__)"
+      placeholder: |
+        OS: Windows 11
+        Python 3.10.12, torch 2.7.0, opencv 4.11.0, ultralytics 8.2.99
+      render: text
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched the existing issues and this hasn't been reported yet
+          required: true
+        - label: I'm using the weights shipped in data/ (untick if you retrained)

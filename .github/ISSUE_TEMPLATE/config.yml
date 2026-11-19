@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question about how something works
+    url: https://github.com/AstroPTP/medical-device-perception/blob/master/README.md#how-it-works
+    about: Check the "How it works" section of the README first. If it's still unclear, open a feature request describing what's missing from the docs.
+  - name: Contributing guidelines
+    url: https://github.com/AstroPTP/medical-device-perception/blob/master/CONTRIBUTING.md
+    about: Branch names, commit messages, code style and the academic integrity note.

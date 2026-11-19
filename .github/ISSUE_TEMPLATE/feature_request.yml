@@ -1,0 +1,46 @@
+name: Feature request
+description: Suggest an improvement, e.g. support for a new device or lighting condition
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! Please note that this project keeps the original assignment's
+        constraints: no pre-made OCR (Tesseract, EasyOCR, ...), and assignment.py stays unchanged.
+        See [CONTRIBUTING.md](https://github.com/AstroPTP/medical-device-perception/blob/master/CONTRIBUTING.md) for details.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What can't you do now, or what doesn't work well enough?
+      placeholder: Readings fail on BPMs with a backlit blue LCD.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How do you think it could work? Which task(s) would change?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Example images (only ones you can share), links to papers or datasets, etc.
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd like to work on this myself and open a pull request
